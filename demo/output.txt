@@ -1,0 +1,16 @@
+CPU: Intel(R) Xeon(R) Processor
+train=1257 test=540 features=64
+teacher soft probs softmax(logits/T): mean max prob = 0.7447
+distillation temperature T=4.0
+latency: median of 2000 batch-1 numpy forward passes after 200 warmup (quantized models run dequantized fp32 weights)
+
+model                      test_acc   params  weight_bytes  latency_us
+----------------------------------------------------------------------
+teacher (256,256) fp32       0.9778    85002        340008        9.51
+student hard-label fp32      0.9741     2410          9640        3.82
+student distilled fp32       0.9685     2410          9640        3.83
+student distilled int8       0.9685     2410          2544        3.86
+student distilled 4-bit      0.9648     2410          1360        3.86
+
+prediction agreement with fp32 distilled student: int8=1.0000 4-bit=0.9889
+weight_bytes for quantized models = packed weights + fp32 biases + one fp32 scale per tensor
