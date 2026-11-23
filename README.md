@@ -96,6 +96,35 @@ Recent results, newest first. Date = first arXiv version; each line is a short s
 | 2026-07-02 | [Embodied.cpp: A Portable Inference Runtime of Embodied AI Models on Heterogeneous Robots](https://arxiv.org/abs/2607.02501) | Embodied.cpp: a portable C++ runtime for running robot policy models on mixed edge hardware. |
 | 2025-06-09 | [BitVLA: 1-bit Vision-Language-Action Models for Robotics Manipulation](https://arxiv.org/abs/2506.07530) | BitVLA: a vision-language-action model with ternary weights {-1, 0, 1} for manipulation. |
 
+## System Profile: Object · Data · Model · Training · History · Unique Properties
+
+`lab-feet` is part of the [Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab) ecosystem ([Project Studio](https://yaniguan.github.io/auto-lab/)) at **Layer `L0 · Edge Distillation & Quantized Runtime`**.
+
+- **Object**: Edge compute substrate that distills large teacher networks into compact student models and quantizes weights to `int8` and `4-bit` for low-cost, low-latency benchtop inference.
+- **Data**: `scikit-learn` digits (`1,797` `8x8` grayscale images, `64` features, stratified `1,257` train / `540` test split, `StandardScaler` fit on train), serialized into `fp32`, `int8`, and nibble-packed signed `4-bit` weight buffers.
+- **Model**: `(256, 256)` ReLU MLP teacher (`85,002` params, `340,008 B`) -> `(32,)` ReLU MLP students (`2,410` params, `9,640 B` fp32 -> `2,544 B` `int8` -> `1,360 B` packed `4-bit`, `250x` smaller than teacher).
+- **Training**: High-temperature scaled logit regression (`logits / T` at `T = 4.0`) vs. hard-label cross-entropy (`0.9685` vs. `0.9741` test accuracy, honestly documenting both); `int8` retains `100%` prediction agreement (`0.9685`) and `4-bit` retains `98.89%` (`0.9648`), running dequantized `fp32` `numpy` matmuls (`3.82–3.86 us` vs. `9.51 us` teacher).
+- **History**: `a7b1532` (2026-11-18, `main` teacher-student distillation + `int8`/`4-bit` bit-packing pipeline, CPU latency benchmark, CI workflow, and edge-runtime catalog).
+- **Unique Properties**: Verified two's-complement nibble round-trip (`pack_4bit`/`unpack_4bit`), shared `numpy` `batch=1` latency harness, and foundational `L0` runtime role for [`lab-ears`](https://github.com/yaniguan/lab-ears), [`lab-hands`](https://github.com/yaniguan/lab-hands), and [`YLM`](https://github.com/yaniguan/YLM).
+
+Full technical specification: [`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md).
+
+## Repository Layout
+
+```text
+lab-feet/
+├── .github/workflows/
+│   └── demo.yml                  # CI workflow running teacher-student distillation & quantization
+├── demo/
+│   ├── distill_quantize.py       # Logit distillation (T=4), int8/4-bit packing, and latency timer
+│   └── output.txt                # Reference Xeon CPU accuracy, byte-size, and latency table
+├── docs/
+│   └── ARCHITECTURE_AND_HISTORY.md
+├── LICENSE                       # MIT License
+├── README.md                     # Overview, distillation results, and edge-runtime resources
+└── requirements.txt              # numpy and scikit-learn
+```
+
 ## Contributing
 
 Found a broken link or a missing dataset, repo or paper? Open an issue or a pull request.
