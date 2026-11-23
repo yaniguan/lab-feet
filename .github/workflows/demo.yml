@@ -1,15 +1,32 @@
 name: demo
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - run: python demo/distill_quantize.py
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Run unit tests
+        run: pytest -q
+      - name: Run distillation & quantization benchmark with threshold gates
+        run: |
+          python demo/distill_quantize.py --assert-thresholds --json-out reports/benchmark.json --export-bin reports/student_4bit.lft1
+          lab-feet inspect-binary reports/student_4bit.lft1

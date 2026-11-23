@@ -1,0 +1,100 @@
+"""lab_feet: Edge knowledge distillation, int8/4-bit quantization, W8A8 matmul, and binary runtime."""
+
+from .benchmarks import (
+    generate_wetlab_spectral_dataset,
+    make_stratified_splits,
+    run_autoencoder_compression_benchmark,
+    run_digits_benchmark,
+    run_wetlab_acoustic_benchmark,
+)
+from .distill import (
+    TrainingDiagnostics,
+    distill_kl_student,
+    fit_sklearn_mlp,
+    kl_divergence_soft_targets,
+    zero_mean_logits,
+)
+from .equivariant import (
+    equivariant_irrep_linear,
+    guard_equivariant_spatial_quantization,
+    max_so3_equivariance_error,
+    quantize_equivariant_irrep_weights,
+    random_so3_rotation,
+)
+from .quantize import (
+    QuantizedLayer,
+    QuantizedModel,
+    forward_int8,
+    pack_4bit,
+    quantize,
+    quantize_model,
+    unpack_4bit,
+)
+from .runtime import (
+    LatencyStats,
+    accuracy,
+    cpu_model,
+    forward,
+    fp32_bytes,
+    get_layers,
+    latency_stats,
+    latency_us,
+    n_params,
+    single_thread_blas,
+    softmax,
+)
+from .serialize import (
+    BINARY_MAGIC,
+    BINARY_VERSION,
+    compute_binary_header_bytes,
+    from_binary_buffer,
+    load_quantized_binary,
+    save_quantized_binary,
+    to_binary_buffer,
+)
+
+__version__ = "0.2.0"
+
+__all__ = [
+    "__version__",
+    "BINARY_MAGIC",
+    "BINARY_VERSION",
+    "LatencyStats",
+    "QuantizedLayer",
+    "QuantizedModel",
+    "TrainingDiagnostics",
+    "accuracy",
+    "compute_binary_header_bytes",
+    "cpu_model",
+    "distill_kl_student",
+    "equivariant_irrep_linear",
+    "fit_sklearn_mlp",
+    "forward",
+    "forward_int8",
+    "fp32_bytes",
+    "from_binary_buffer",
+    "generate_wetlab_spectral_dataset",
+    "get_layers",
+    "guard_equivariant_spatial_quantization",
+    "kl_divergence_soft_targets",
+    "latency_stats",
+    "latency_us",
+    "load_quantized_binary",
+    "make_stratified_splits",
+    "max_so3_equivariance_error",
+    "n_params",
+    "pack_4bit",
+    "quantize",
+    "quantize_equivariant_irrep_weights",
+    "quantize_model",
+    "random_so3_rotation",
+    "run_autoencoder_compression_benchmark",
+    "run_digits_benchmark",
+    "run_wetlab_acoustic_benchmark",
+    "save_quantized_binary",
+    "single_thread_blas",
+    "softmax",
+    "to_binary_buffer",
+    "unpack_4bit",
+    "zero_mean_logits",
+]

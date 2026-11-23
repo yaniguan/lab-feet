@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yaniguan/lab-feet/schema/benchmark_report.schema.json",
+  "title": "LabFeetBenchmarkReport",
+  "description": "Structured benchmark output schema for lab-feet distillation and quantization runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "digits",
+    "wetlab",
+    "autoencoder"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "digits": {
+      "$ref": "#/$defs/DigitsReport"
+    },
+    "wetlab": {
+      "type": ["object", "null"]
+    },
+    "autoencoder": {
+      "type": ["object", "null"]
+    }
+  },
+  "$defs": {
+    "ModelMetricRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "val_acc",
+        "test_acc",
+        "params",
+        "weight_bytes",
+        "median_us",
+        "p95_us",
+        "p99_us",
+        "iqr_us",
+        "agreement_with_kl_fp32",
+        "training"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "val_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "test_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "params": { "type": "integer", "minimum": 1 },
+        "weight_bytes": { "type": "integer", "minimum": 1 },
+        "median_us": { "type": "number", "minimum": 0.0 },
+        "p95_us": { "type": "number", "minimum": 0.0 },
+        "p99_us": { "type": "number", "minimum": 0.0 },
+        "iqr_us": { "type": "number", "minimum": 0.0 },
+        "agreement_with_kl_fp32": { "type": ["number", "null"] },
+        "training": { "type": ["object", "null"] }
+      }
+    },
+    "DigitsReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark",
+        "cpu",
+        "seed",
+        "temperature",
+        "alpha",
+        "splits",
+        "teacher_mean_max_soft_prob",
+        "timing_config",
+        "binary_container_verification",
+        "models"
+      ],
+      "properties": {
+        "benchmark": { "type": "string", "const": "sklearn_digits" },
+        "cpu": { "type": "string", "minLength": 1 },
+        "seed": { "type": "integer" },
+        "temperature": { "type": "number", "exclusiveMinimum": 0.0 },
+        "alpha": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "splits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["train", "val", "test", "features"],
+          "properties": {
+            "train": { "type": "integer", "minimum": 1 },
+            "val": { "type": "integer", "minimum": 1 },
+            "test": { "type": "integer", "minimum": 1 },
+            "features": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "teacher_mean_max_soft_prob": { "type": "number" },
+        "timing_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["n_warmup", "n_timing"],
+          "properties": {
+            "n_warmup": { "type": "integer", "minimum": 0 },
+            "n_timing": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "binary_container_verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "payload_weight_bytes", "header_bytes", "total_blob_bytes"],
+          "properties": {
+            "format": { "type": "string", "const": "LFT1" },
+            "payload_weight_bytes": { "type": "integer", "minimum": 1 },
+            "header_bytes": { "type": "integer", "minimum": 1 },
+            "total_blob_bytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "models": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/$defs/ModelMetricRow" }
+        }
+      }
+    }
+  }
+}

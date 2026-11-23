@@ -4,52 +4,47 @@ Let the lab agent *walk on its own feet*: big models teach small ones, small one
 
 ## Where it fits
 
-In the lab agent on [yaniguan.github.io](https://yaniguan.github.io/), the feet are planned: cloud GPUs only in short bursts, and small quantized models on the edge. This repo collects distillation and quantization tools and edge runtimes, The first attempt is one small CPU-only script: a big model teaches a small one, then the small one is quantized to int8 and 4-bit.
+In the lab agent on [yaniguan.github.io](https://yaniguan.github.io/auto-lab/), the feet are Layer `L0 · Edge Distillation & Quantized Runtime`: cloud GPUs run only in short bursts, while small quantized models execute locally beside wet-lab instruments. This repo collects distillation and quantization tools and edge runtimes. The reference package (`src/lab_feet/`) and CPU script (`demo/distill_quantize.py`) distill large teachers into compact students using hybrid $T^2$-scaled KL divergence + cross-entropy, quantize weights to `int8` and packed two's-complement `4-bit` (`uint8` 2-weights-per-byte), run `W8A8` integer `int32`-accumulator matmuls, serialize flat `LFT1` binary models, and guard $SO(3)$-equivariant channel quantization.
 
-## First attempt
-
-scikit-learn's bundled digits (8x8 images, 10 classes). Teacher MLP (256,256); Student MLP (32) trained two ways: on hard labels, or distilled by regressing the teacher's logits divided by T=4. The distilled student is then quantized per tensor to int8 and 4-bit. Batch-1 latency is the median of 2000 single-sample numpy forward passes on one CPU.
+## Quickstart & CLI
 
 ```bash
-pip install numpy scikit-learn
-python demo/distill_quantize.py
+pip install -e ".[dev]"
+
+# Run digits + wet-lab spectral regime distillation + lab-ears autoencoder compression
+python demo/distill_quantize.py --assert-thresholds --export-bin reports/student_4bit.lft1 --json-out reports/benchmark.json
+
+# Inspect serialized LFT1 binary container or export benchmark JSON Schema
+lab-feet inspect-binary reports/student_4bit.lft1
+lab-feet export-schema
+
+# Run unit & regression test suite
+pytest
 ```
 
-Output (Linux, CPU only, 2026-11-18):
+## Distillation, Quantization & Edge Runtime Benchmark
 
-```
-CPU: Intel(R) Xeon(R) Processor
-train=1257 test=540 features=64
-teacher soft probs softmax(logits/T): mean max prob = 0.7447
-distillation temperature T=4.0
-latency: median of 2000 batch-1 numpy forward passes after 200 warmup (quantized models run dequantized fp32 weights)
+- **Leakage-free split**: `scikit-learn` digits (`1,797` `8x8` images, `64` features) split stratified into `train=1,068`, `val=189`, and `test=540` (`StandardScaler` fit strictly on `train`; `val` used for checkpoint selection and MSE-clipping calibration).
+- **Distillation comparison**: Compares hard-label cross-entropy, uncentered logit MSE, Hinton zero-mean logit MSE, and hybrid $(1 - \alpha)\, T^2\, \mathrm{KL}(p_T \| q_T) + \alpha\, \mathrm{CE}(y, z_s)$ (`T = 4.0`, `alpha = 0.25`). Hybrid `KL(T^2)+CE` lifts the 32-unit student (`2,410` params) to **`0.9852` test accuracy**, outperforming both hard-label training (`0.9759`) and the `85,002`-parameter teacher (`0.9778`).
+- **Quantization & `W8A8` integer matmul**: Evaluates `int8` per-tensor (`2,544 B`), true `W8A8` dynamic `int8` activation x `int8` weight `int32` matmul (`100%` prediction agreement), and packed `uint8` `4-bit` (`1,360 B` per-tensor; `1,520 B` per-channel + MSE-clipping search reaching `99.63%` agreement with fp32), verified on disk via the `LFT1` flat binary serializer (`1,520 B` payload + `64 B` header = `1,584 B`).
+- **Wet-lab domain & `lab-ears` compression**: Includes a 6-class wet-lab benchtop spectral regime distillation benchmark (`48` mel-band features) and `7.23x` `4-bit` compression (`470,304 B -> 65,088 B`) of the `lab-ears` `320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320` acoustic anomaly `MLPRegressor` autoencoder.
+- **$SO(3)$-equivariant quantization (`lab_feet.equivariant`)**: Quantizes scalar invariant channel-mixing weights `(C_in, C_out)` while blocking naive spatial `(2l + 1)` rounding that would break 3D rotational equivariance $f(X R^\top) = f(X) R^\top$ in [`YLM`](https://github.com/yaniguan/YLM) force heads.
 
-model                      test_acc   params  weight_bytes  latency_us
-----------------------------------------------------------------------
-teacher (256,256) fp32       0.9778    85002        340008        9.51
-student hard-label fp32      0.9741     2410          9640        3.82
-student distilled fp32       0.9685     2410          9640        3.83
-student distilled int8       0.9685     2410          2544        3.86
-student distilled 4-bit      0.9648     2410          1360        3.86
-
-prediction agreement with fp32 distilled student: int8=1.0000 4-bit=0.9889
-weight_bytes for quantized models = packed weights + fp32 biases + one fp32 scale per tensor
-```
-
-The 32-unit hard-label student keeps almost all of the teacher's accuracy (0.974 vs 0.978) with 35x fewer parameters and runs about 2.5x faster. Distillation was slightly *worse* than plain hard-label training on this easy task (0.969 vs 0.974). int8 cost no accuracy and 4-bit cost 0.4 points, but in numpy the weights are dequantized before the matmul, so quantization here saves storage, not time. Latency changes a little from run to run. Next: a real int8 runtime, a small language or force-field student, and timing on a real edge board.
+See [`demo/output.txt`](demo/output.txt) for captured reference output (`median`, `p95`, `p99`, and `IQR` latencies in microseconds with single-thread BLAS pinning).
 
 ## Datasets
 
 | Dataset | What | License |
 |---|---|---|
-| [scikit-learn digits](https://scikit-learn.org/stable/datasets/toy_dataset.html) | 1797 8x8 digit images (bundled) | BSD-3 (bundled with scikit-learn) |
+| [scikit-learn digits](https://scikit-learn.org/stable/datasets/toy_dataset.html) | 1797 8x8 digit images (bundled) | BSD-3-Clause (bundled with scikit-learn) |
+| Wet-Lab Spectral Regimes (synthetic) | 1800 48-band benchtop harmonic/cavitation spectra (`lab_feet.benchmarks`) | MIT (deterministic generator) |
 
 ## Open-source repos
 
 Stars as of 2026-11-18.
 
 | Repo | What | Stars | License |
-|---|---|---:|---|
+|---|---|---|---|
 | [ollama/ollama](https://github.com/ollama/ollama) | Get up and running with Kimi, GLM, MiniMax, DeepSeek, gpt-oss, Qwen, Gemma and other... | 187,492 | MIT |
 | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | LLM inference in C/C++ | 135,599 | MIT |
 | [mlc-ai/mlc-llm](https://github.com/mlc-ai/mlc-llm) | Universal LLM Deployment Engine with ML Compilation | 23,402 | Apache-2.0 |
@@ -100,12 +95,12 @@ Recent results, newest first. Date = first arXiv version; each line is a short s
 
 `lab-feet` is part of the [Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab) ecosystem ([Project Studio](https://yaniguan.github.io/auto-lab/)) at **Layer `L0 · Edge Distillation & Quantized Runtime`**.
 
-- **Object**: Edge compute substrate that distills large teacher networks into compact student models and quantizes weights to `int8` and `4-bit` for low-cost, low-latency benchtop inference.
-- **Data**: `scikit-learn` digits (`1,797` `8x8` grayscale images, `64` features, stratified `1,257` train / `540` test split, `StandardScaler` fit on train), serialized into `fp32`, `int8`, and nibble-packed signed `4-bit` weight buffers.
-- **Model**: `(256, 256)` ReLU MLP teacher (`85,002` params, `340,008 B`) -> `(32,)` ReLU MLP students (`2,410` params, `9,640 B` fp32 -> `2,544 B` `int8` -> `1,360 B` packed `4-bit`, `250x` smaller than teacher).
-- **Training**: High-temperature scaled logit regression (`logits / T` at `T = 4.0`) vs. hard-label cross-entropy (`0.9685` vs. `0.9741` test accuracy, honestly documenting both); `int8` retains `100%` prediction agreement (`0.9685`) and `4-bit` retains `98.89%` (`0.9648`), running dequantized `fp32` `numpy` matmuls (`3.82–3.86 us` vs. `9.51 us` teacher).
-- **History**: `a7b1532` (2026-11-18, `main` teacher-student distillation + `int8`/`4-bit` bit-packing pipeline, CPU latency benchmark, CI workflow, and edge-runtime catalog).
-- **Unique Properties**: Verified two's-complement nibble round-trip (`pack_4bit`/`unpack_4bit`), shared `numpy` `batch=1` latency harness, and foundational `L0` runtime role for [`lab-ears`](https://github.com/yaniguan/lab-ears), [`lab-hands`](https://github.com/yaniguan/lab-hands), and [`YLM`](https://github.com/yaniguan/YLM).
+- **Object**: Edge compute substrate that distills large teacher networks into compact students, quantizes weights to `int8` and packed `4-bit` (`uint8` nibbles), runs `W8A8` integer `int32` matmul verification, and serializes flat `LFT1` binary models for benchtop microcontrollers and SBCs.
+- **Data**: Stratified `train=1,068 / val=189 / test=540` split on `scikit-learn` digits (`StandardScaler` fit strictly on `train`), 6-class wet-lab spectral regime data (`1,800 x 48`), and `lab-ears` 320-dim mel-patch autoencoder benchmarks.
+- **Model**: `(256, 256)` ReLU teacher (`85,002` params, `340,008 B`) -> `(32,)` students (`2,410` params, `9,640 B` fp32 -> `2,544 B` `int8` -> `1,360 B` per-tensor `4-bit` / `1,520 B` per-channel `4-bit`), plus `lab-ears` `320->128->128->8->128->128->320` autoencoder (`470,304 B -> 65,088 B`, `7.23x` smaller) and $SO(3)$-equivariant scalar irrep layers.
+- **Training**: Hybrid $T^2$-scaled KL divergence + cross-entropy Adam distillation (`0.9852` test accuracy on digits) compared side-by-side against hard-label CE (`0.9759`), zero-mean logit MSE, and uncentered logit MSE (`0.9685`), with scoped `ConvergenceWarning` tracking and scoped `np.random.default_rng` seeds.
+- **History**: Initialized in `a7b1532` (`2026-11-18`) and expanded in `0.2.0` (`fix/resolve-audit-issues`) resolving all 24 audit issues (`#1..#24`).
+- **Unique Properties**: Genuine packed `uint8` 2-weights-per-byte `QuantizedLayer` storage verified on disk (`LFT1` binary + `.npz`), `W8A8` `int32` reference execution, MSE-optimal clipping search, single-thread BLAS percentile timing (`median`/`p95`/`p99`/`IQR`), and $SO(3)$ rotation-equivariant channel quantization.
 
 Full technical specification: [`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md).
 
@@ -114,21 +109,35 @@ Full technical specification: [`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITEC
 ```text
 lab-feet/
 ├── .github/workflows/
-│   └── demo.yml                  # CI workflow running teacher-student distillation & quantization
+│   └── demo.yml                      # Linux / Windows / macOS CI running pytest & threshold gates
 ├── demo/
-│   ├── distill_quantize.py       # Logit distillation (T=4), int8/4-bit packing, and latency timer
-│   └── output.txt                # Reference Xeon CPU accuracy, byte-size, and latency table
+│   ├── distill_quantize.py           # Benchmark runner (digits, wet-lab regimes, lab-ears AE)
+│   └── output.txt                    # Captured accuracy, byte-size, and latency percentile report
 ├── docs/
-│   └── ARCHITECTURE_AND_HISTORY.md
-├── LICENSE                       # MIT License
-├── README.md                     # Overview, distillation results, and edge-runtime resources
-└── requirements.txt              # numpy and scikit-learn
+│   └── ARCHITECTURE_AND_HISTORY.md   # Deep technical specification & mathematical invariants
+├── schema/
+│   └── benchmark_report.schema.json  # Draft 2020-12 JSON Schema for benchmark JSON reports
+├── src/lab_feet/
+│   ├── __init__.py                   # Public package API
+│   ├── benchmarks.py                 # Digits, wet-lab spectral, and lab-ears AE benchmarks
+│   ├── cli.py                        # `lab-feet` CLI (benchmark, inspect-binary, export-schema)
+│   ├── distill.py                    # Zero-mean MSE & hybrid T^2 KL + CE Adam distillation
+│   ├── equivariant.py                # SO(3)-equivariant scalar irrep weight quantization & guards
+│   ├── quantize.py                   # Symmetric/asymmetric per-tensor/channel int8/4-bit & W8A8
+│   ├── runtime.py                    # Cross-platform cpu_model, BLAS pinning, forward & percentiles
+│   └── serialize.py                  # Flat little-endian LFT1 binary serializer & verifier
+├── tests/
+│   └── test_distill_quantize.py      # Offline pytest suite covering issues #1..#24
+├── LICENSE                           # MIT License
+├── pyproject.toml                    # Package build metadata & `lab-feet` console script
+├── README.md                         # Overview, benchmark summary, and edge-runtime catalog
+└── requirements.txt                  # Pinned minimum numpy>=1.26 and scikit-learn>=1.4
 ```
 
 ## Contributing
 
-Found a broken link or a missing dataset, repo or paper? Open an issue or a pull request.
+Found a broken link or a missing dataset, repo, or paper? Open an issue or a pull request.
 
 ## License
 
-Code in this repo: MIT. Listed datasets, repos and papers keep their own licenses.
+Code in this repo: MIT ([`LICENSE`](LICENSE)). Listed datasets, repos, and papers keep their own licenses.
