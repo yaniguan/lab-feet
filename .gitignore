@@ -1,5 +1,25 @@
+# Local data and generated reports
 data/
+/reports/
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Virtual environments
 .venv/
 venv/
+ENV/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / linter caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
