@@ -18,6 +18,11 @@ python demo/distill_quantize.py --assert-thresholds --export-bin reports/student
 lab-feet inspect-binary reports/student_4bit.lft1
 lab-feet export-schema
 
+# List, live-probe, or fetch on-demand open edge sensor & 1D spectral datasets into gitignored data/
+python scripts/fetch_open_datasets.py --list
+python scripts/fetch_open_datasets.py --verify-urls
+python scripts/fetch_open_datasets.py --dataset uci_gas_sensor_drift --smoke-distill --smoke-drift
+
 # Run unit & regression test suite
 pytest
 ```
@@ -34,10 +39,19 @@ See [`demo/output.txt`](demo/output.txt) for captured reference output (`median`
 
 ## Datasets
 
-| Dataset | What | License |
-|---|---|---|
-| [scikit-learn digits](https://scikit-learn.org/stable/datasets/toy_dataset.html) | 1797 8x8 digit images (bundled) | BSD-3-Clause (bundled with scikit-learn) |
-| Wet-Lab Spectral Regimes (synthetic) | 1800 48-band benchtop harmonic/cavitation spectra (`lab_feet.benchmarks`) | MIT (deterministic generator) |
+`lab_feet.datasets` (`OPEN_EDGE_DATASETS`) provides a typed, SPDX-license-gated `OpenEdgeDataset` registry, leakage-free `DeterministicFeatureNormalizer` (`zscore`, `robust_iqr`, `minmax_symmetric`, `signed_log1p_zscore`, `snv_zscore`), on-demand fetchers (`scripts/fetch_open_datasets.py` writing into gitignored `data/`), and direct loaders feeding `run_open_dataset_distill_quantize` and multi-batch `DriftAbstainingInt4Classifier` (`evaluate_temporal_drift_abstaining_int4`).
+
+| Dataset | ID (`lab_feet.datasets`) | Shape / Drift | What | License |
+|---|---|---|---|---|
+| [scikit-learn digits](https://scikit-learn.org/stable/datasets/toy_dataset.html) | *(bundled)* | `1,797 x 64` (10 classes) | `8x8` handwritten digit images bundled with `scikit-learn` | BSD-3-Clause |
+| Wet-Lab Spectral Regimes | *(synthetic)* | `1,800 x 48` (6 classes) | Deterministic benchtop harmonic/cavitation mel spectra (`lab_feet.benchmarks`) | MIT |
+| [MNIST-1D](https://github.com/greydanus/mnist1d) | `mnist1d` | `5,000 x 40` (10 classes) | Compact 40-point template-warped 1D signal classification (`greydanus/mnist1d`) | Apache-2.0 |
+| [UCI Gas Sensor Array Drift](https://archive.ics.uci.edu/dataset/224/gas+sensor+array+drift+dataset) | `uci_gas_sensor_drift` | `13,910 x 128` (6 classes, 10 drift batches) | 16-sensor MOX chemical array over 36 months (`batch1..batch10` aging drift, `DOI:10.24432/C5RP6W`) | CC-BY-4.0 |
+| [UCI HAR Smartphones](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones) | `uci_har_inertial` | `10,299 x 561` (6 classes) | 50 Hz 3-axis accelerometer & 3-axis gyroscope inertial window features (`DOI:10.24432/C54S4K`) | CC-BY-4.0 |
+| [CWRU Bearing Vibration](https://huggingface.co/datasets/odysseywt/CWRU) | `cwru_bearing_vibration` | `21,786 x 17` (4 classes, 5 spall batches) | Rolling-element bearing vibration fault features across `0.000"–0.028"` spall severities | MIT |
+| [UCI Hydraulic Vibration](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) | `uci_hydraulic_vibration` | `2,205 x 60` (4 classes, 3 thermal batches) | Benchtop hydraulic rig 1-Hz mechanical vibration (`VS1`) across valve wear & cooler drift (`DOI:10.24432/C5CW21`) | CC-BY-4.0 |
+| [SERS Gold-Nanorod Bacteria (2026)](https://github.com/erkankaratas-eng/sers-gna-bacteria) | `sers_bacteria_raman_2026` | `117 x 1,215` (9 classes, 3 acq. batches) | SERS Raman micro-spectroscopy (`248–1998 cm^-1`) of 9 clinical bacterial strains (Gulmus et al., 2026) | MIT |
+| [EthanolLevel NIR Spectroscopy](https://zenodo.org/records/11190985) | `ethanol_nir_spectroscopy` | `1,004 x 1,751` (4 classes, bottle shift) | Through-glass non-invasive NIR/Raman spectra (`35%–45%` ethanol across 20 glass bottle types) | CC-BY-4.0 |
 
 ## Open-source repos
 
@@ -96,7 +110,7 @@ Recent results, newest first. Date = first arXiv version; each line is a short s
 `lab-feet` is part of the [Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab) ecosystem ([Project Studio](https://yaniguan.github.io/auto-lab/)) at **Layer `L0 · Edge Distillation & Quantized Runtime`**.
 
 - **Object**: Edge compute substrate that distills large teacher networks into compact students, quantizes weights to `int8` and packed `4-bit` (`uint8` nibbles), runs `W8A8` integer `int32` matmul verification, and serializes flat `LFT1` binary models for benchtop microcontrollers and SBCs.
-- **Data**: Stratified `train=1,068 / val=189 / test=540` split on `scikit-learn` digits (`StandardScaler` fit strictly on `train`), 6-class wet-lab spectral regime data (`1,800 x 48`), and `lab-ears` 320-dim mel-patch autoencoder benchmarks.
+- **Data**: Stratified `train=1,068 / val=189 / test=540` split on `scikit-learn` digits (`StandardScaler` fit strictly on `train`), 6-class wet-lab spectral regime data (`1,800 x 48`), `lab-ears` 320-dim mel-patch autoencoder benchmarks, and 7 SPDX-gated open-source edge datasets (`mnist1d`, `uci_gas_sensor_drift` 10-batch 36-month MOX drift, `uci_har_inertial`, `cwru_bearing_vibration`, `uci_hydraulic_vibration`, `sers_bacteria_raman_2026`, `ethanol_nir_spectroscopy`) fetched on-demand into gitignored `data/`.
 - **Model**: `(256, 256)` ReLU teacher (`85,002` params, `340,008 B`) -> `(32,)` students (`2,410` params, `9,640 B` fp32 -> `2,544 B` `int8` -> `1,360 B` per-tensor `4-bit` / `1,520 B` per-channel `4-bit`), plus `lab-ears` `320->128->128->8->128->128->320` autoencoder (`470,304 B -> 65,088 B`, `7.23x` smaller) and $SO(3)$-equivariant scalar irrep layers.
 - **Training**: Hybrid $T^2$-scaled KL divergence + cross-entropy Adam distillation (`0.9852` test accuracy on digits) compared side-by-side against hard-label CE (`0.9759`), zero-mean logit MSE, and uncentered logit MSE (`0.9685`), with scoped `ConvergenceWarning` tracking and scoped `np.random.default_rng` seeds.
 - **History**: Initialized in `a7b1532` (`2026-11-18`) and expanded in `0.2.0` (`fix/resolve-audit-issues`) resolving all 24 audit issues (`#1..#24`).
@@ -137,10 +151,13 @@ lab-feet/
 │   └── LabFeetLean.lean              # Lean 4 nibble, saturating requant, SRAM & 5-gate OOD proofs
 ├── schema/
 │   └── benchmark_report.schema.json  # Draft 2020-12 JSON Schema for benchmark JSON reports
+├── scripts/
+│   └── fetch_open_datasets.py        # On-demand dataset downloader, SPDX verifier & URL prober
 ├── src/lab_feet/
 │   ├── __init__.py                   # Public package API
 │   ├── benchmarks.py                 # Digits, wet-lab spectral, and lab-ears AE benchmarks
 │   ├── cli.py                        # `lab-feet` CLI (benchmark, inspect-binary, export-c-header, export-onnx)
+│   ├── datasets.py                   # OpenEdgeDataset registry, normalizers & multi-batch drift bridges
 │   ├── distill.py                    # Zero-mean MSE & hybrid T^2 KL + CE Adam distillation
 │   ├── equivariant.py                # SO(3)-equivariant scalar irrep weight quantization & guards
 │   ├── export_c.py                   # Freestanding zero-malloc C99 / CMSIS-NN `.rodata` header exporter
@@ -151,7 +168,8 @@ lab-feet/
 ├── tests/
 │   ├── test_autolab_wire.py          # autolab-wire/v1 L0 packet, SHA-256 hot-load & telemetry tests
 │   ├── test_community_extensions.py  # <512 B SRAM OOD/clipping monitor & Lean 5-gate parity tests
-│   └── test_distill_quantize.py      # Offline pytest suite covering issues #1..#31
+│   ├── test_distill_quantize.py      # Offline pytest suite covering issues #1..#31
+│   └── test_open_datasets_2026.py    # Registry, SPDX gate, normalizer, distill & gas-drift tests
 ├── autolab_wire.py                   # L0 node for the 15-repo autolab-wire/v1 pipeline
 ├── LICENSE                           # MIT License
 ├── pyproject.toml                    # Package build metadata & `lab-feet` console script
