@@ -22,6 +22,10 @@ from lab_feet import (
     cpu_model,
     distill_kl_student,
     equivariant_irrep_linear,
+    evaluate_quantized_graph,
+    export_c99_header,
+    export_quantized_graph,
+    export_quantized_onnx,
     fit_sklearn_mlp,
     forward,
     forward_int8,
@@ -32,22 +36,29 @@ from lab_feet import (
     latency_stats,
     load_quantized_binary,
     make_stratified_splits,
+    max_safe_int32_fan_in,
     max_so3_equivariance_error,
     pack_4bit,
+    prepare_fixed_point_model,
     quantize,
     quantize_equivariant_irrep_weights,
+    quantize_input_for_c99,
     quantize_model,
     random_so3_rotation,
     run_autoencoder_compression_benchmark,
     run_digits_benchmark,
     run_wetlab_acoustic_benchmark,
     save_quantized_binary,
+    simulate_c99_fixed_point,
+    smoothquant_migrate,
     softmax,
     to_binary_buffer,
     unpack_4bit,
+    verify_int32_mac_bound,
     zero_mean_logits,
 )
 from lab_feet.cli import main as cli_main
+from lab_feet.quantize import _quantize_activations_int8
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -385,6 +396,300 @@ def test_issues_21_22_and_cli_schema_end_to_end(tmp_path: Path) -> None:
     schema_export = tmp_path / "exported_schema.json"
     assert cli_main(["export-schema", "--output", str(schema_export)]) == 0
     assert schema_export.is_file()
+
+
+def test_issue_26_activation_clipping_unsigned_post_relu_smoothquant_and_outlier_weights() -> None:
+    """Issue #26: Calibrated percentile/static activation clipping, unsigned ReLU, SmoothQuant, and alpha_min=0.25."""
+    # (A) Single glare/EMI spike on channel 0 no longer crushes normal post-ReLU channels at 4-bit
+    x_relu = np.array([[40.0, 1.5, 2.0, 2.8, 0.9, 1.2, 2.5, 1.8]], dtype=np.float32)
+    xq_unclipped, sq_unclipped = _quantize_activations_int8(x_relu, act_bits=4)
+    assert np.all(xq_unclipped[0, 1:] == 0)
+
+    xq_pct, sq_pct = _quantize_activations_int8(
+        x_relu, act_bits=4, act_clip_percentile=85.0, unsigned=True
+    )
+    assert xq_pct.dtype == np.uint8
+    assert int(xq_pct.max()) == 15
+    assert np.all(xq_pct[0, 1:] > 0)
+    mse_unclipped_normal = float(np.mean((x_relu[0, 1:] - (xq_unclipped.astype(np.float32) * sq_unclipped)[0, 1:]) ** 2))
+    mse_clipped_normal = float(np.mean((x_relu[0, 1:] - (xq_pct.astype(np.float32) * sq_pct)[0, 1:]) ** 2))
+    assert mse_clipped_normal * 5.0 < mse_unclipped_normal
+
+    # Negative inputs rejected when unsigned=True
+    with pytest.raises(ValueError, match="unsigned=True"):
+        _quantize_activations_int8(np.array([-0.5, 1.0], dtype=np.float32), act_bits=4, unsigned=True)
+
+    # SmoothQuant migration preserves exact FP32 matmul X @ W while reducing 4-bit activation quantization MSE
+    rng = np.random.default_rng(26)
+    X_spiky = rng.normal(0.0, 0.4, size=(32, 16)).astype(np.float32)
+    X_spiky[:, 0] *= 35.0
+    W_clean = rng.normal(0.0, 0.3, size=(16, 8)).astype(np.float32)
+    X_sm, W_sm, sm_scales = smoothquant_migrate(X_spiky, W_clean, alpha=0.5)
+    assert sm_scales.shape == (16,)
+    assert np.allclose(X_sm @ W_sm, X_spiky @ W_clean, atol=1e-4)
+
+    q_raw = quantize_model([(W_clean, np.zeros(8, dtype=np.float32))], bits=4, per_channel=True)
+    q_sm = quantize_model([(W_sm, np.zeros(8, dtype=np.float32))], bits=4, per_channel=True)
+    y_true = X_spiky @ W_clean
+    mse_raw_w4a4 = float(np.mean((y_true - forward_int8(q_raw, X_spiky, act_bits=4)) ** 2))
+    mse_sm_w4a4 = float(np.mean((y_true - forward_int8(q_sm, X_sm, act_bits=4)) ** 2))
+    assert mse_sm_w4a4 * 5.0 < mse_raw_w4a4
+
+    # (B) Per-tensor 4-bit weight_mse search retains non-outlier weights instead of collapsing 100% to 0
+    rng_b = np.random.default_rng(0)
+    W_out = rng_b.normal(0.0, 0.2, size=(32, 8)).astype(np.float32)
+    W_out[0, 0] = 12.0
+    qm_none = quantize_model([(W_out, np.zeros(8, dtype=np.float32))], bits=4, per_channel=False, clip_search="none")
+    qm_wmse = quantize_model(
+        [(W_out, np.zeros(8, dtype=np.float32))],
+        bits=4,
+        per_channel=False,
+        clip_search="weight_mse",
+        alpha_min=0.25,
+        grid_steps=41,
+    )
+    w_deq_none = qm_none.dequantize()[0][0]
+    w_deq_wmse = qm_wmse.dequantize()[0][0]
+    assert float(np.mean(w_deq_wmse[1:, 1:] != 0.0)) > 0.70
+    bulk_mse_none = float(np.mean((W_out[:, 1:] - w_deq_none[:, 1:]) ** 2))
+    bulk_mse_wmse = float(np.mean((W_out[:, 1:] - w_deq_wmse[:, 1:]) ** 2))
+    assert bulk_mse_wmse * 5.0 < bulk_mse_none
+
+    # (C) Consistent quantized h_cal propagation & static activation clip calibration
+    layers_2 = [
+        (rng.normal(0.0, 0.4, size=(16, 12)).astype(np.float32), np.zeros(12, dtype=np.float32)),
+        (rng.normal(0.0, 0.4, size=(12, 4)).astype(np.float32), np.zeros(4, dtype=np.float32)),
+    ]
+    X_cal = rng.normal(0.0, 1.0, size=(48, 16)).astype(np.float32)
+    qm_qcal = quantize_model(
+        layers_2,
+        bits=4,
+        per_channel=True,
+        clip_search="activation_mse",
+        X_cal=X_cal,
+        quantize_cal_activations=True,
+        cal_act_bits=4,
+        calibrate_static_act_clips=True,
+    )
+    assert qm_qcal.calibrated_act_clip_max is not None and len(qm_qcal.calibrated_act_clip_max) == 2
+    out_u = qm_qcal.forward_int8(X_cal[:8], act_bits=4, unsigned_post_relu=True)
+    assert out_u.shape == (8, 4) and np.all(np.isfinite(out_u))
+
+
+def test_issue_27_odd_length_nibble_metadata_and_strict_payload_validation(tmp_path: Path) -> None:
+    """Issue #27: Exact orig_len/shape metadata, odd padding checks, and LFT1 payload validation."""
+    odd_vec = np.array([-8, -5, -1, 0, 3, 6, 7], dtype=np.int8)
+    packed, meta = pack_4bit(odd_vec, return_metadata=True)  # type: ignore[misc]
+    assert meta == {"orig_len": 7, "orig_shape": (7,)}
+    assert packed.size == 4
+    assert ((int(packed[-1]) >> 4) & 0x0F) == 0
+    assert np.array_equal(unpack_4bit(packed, meta["orig_len"]), odd_vec)
+
+    # Oversized buffers and non-zero high padding nibbles are rejected
+    with pytest.raises(ValueError, match="exceeds expected"):
+        unpack_4bit(np.zeros(100, dtype=np.uint8), (3, 5))
+
+    corrupted_pad = packed.copy()
+    corrupted_pad[-1] |= np.uint8(0x50)
+    with pytest.raises(ValueError, match="padding nibble"):
+        unpack_4bit(corrupted_pad, (7,))
+
+    # Invalid QuantizedLayer payload / bias shapes are rejected immediately at construction
+    with pytest.raises(ValueError, match="packed_weights size mismatch"):
+        QuantizedLayer(
+            packed_weights=np.array([0xFF, 0xFF], dtype=np.uint8),
+            scale=np.ones(1, dtype=np.float32),
+            bias=np.zeros(5, dtype=np.float32),
+            shape=(3, 5),
+            bits=4,
+        )
+    with pytest.raises(ValueError, match="bias length"):
+        QuantizedLayer(
+            packed_weights=np.zeros(8, dtype=np.uint8),
+            scale=np.ones(1, dtype=np.float32),
+            bias=np.zeros(99, dtype=np.float32),
+            shape=(3, 5),
+            bits=4,
+        )
+
+    # Odd-shaped multi-layer model `(25, 15) -> (15, 5)` round-trips cleanly across LFT1 and .npz
+    rng = np.random.default_rng(27)
+    odd_layers = [
+        (rng.normal(0.0, 0.3, size=(25, 15)).astype(np.float32), rng.normal(0.0, 0.05, size=15).astype(np.float32)),
+        (rng.normal(0.0, 0.3, size=(15, 5)).astype(np.float32), rng.normal(0.0, 0.05, size=5).astype(np.float32)),
+    ]
+    qm_odd = quantize_model(odd_layers, bits=4, per_channel=True, mode="symmetric_full")
+    assert qm_odd.layers[0].orig_len == 375 and qm_odd.layers[0].packed_weights.size == 188
+    assert qm_odd.layers[1].orig_len == 75 and qm_odd.layers[1].packed_weights.size == 38
+
+    blob = bytearray(to_binary_buffer(qm_odd))
+    reloaded = from_binary_buffer(blob)
+    x_probe = rng.normal(size=(6, 25)).astype(np.float32)
+    assert np.allclose(reloaded.forward_dequant(x_probe), qm_odd.forward_dequant(x_probe))
+
+    npz_path = qm_odd.save_npz(tmp_path / "odd_model.npz")
+    assert np.allclose(QuantizedModel.load_npz(npz_path).forward_dequant(x_probe), qm_odd.forward_dequant(x_probe))
+
+    # Corrupting LFT1 odd high-nibble padding or header payload_nbytes raises ValueError
+    corrupted_lft1 = bytearray(blob)
+    # Last byte of LFT1 is the final byte of layer 1's odd (75-element) packed_weights
+    corrupted_lft1[-1] |= 0xF0
+    with pytest.raises(ValueError, match="padding nibble"):
+        from_binary_buffer(corrupted_lft1)
+
+    bad_hdr_lft1 = bytearray(blob)
+    # Overwrite d_in of layer 0 from 25 to 26 while keeping payload_nbytes=188
+    bad_hdr_lft1[8:12] = (26).to_bytes(4, "little")
+    with pytest.raises(ValueError, match="Malformed LFT1 payload_nbytes"):
+        from_binary_buffer(bad_hdr_lft1)
+
+
+def test_issue_28_int32_mac_bounds_and_wide_layer_tiled_forward_int8() -> None:
+    """Issue #28: Verify worst-case int32 MAC bounds and exact tiled reduction for d_in > 70,000."""
+    assert max_safe_int32_fan_in(8, 8, asymmetric=False) == 133144
+    assert max_safe_int32_fan_in(8, 8, asymmetric=True) == 66311
+    assert verify_int32_mac_bound(133144, 127, 127) is True
+    assert verify_int32_mac_bound(133145, 127, 127) is False
+
+    # Asymmetric W8A8 with d_in = 72,000 (> 66,311) saturating every product to 127 * (127 - (-128)) = 32,385:
+    # Untiled int32 would wrap around 72,000 * 32,385 = 2,331,720,000 > INT32_MAX -> negative!
+    d_in = 72000
+    qlayer_wide = QuantizedLayer(
+        packed_weights=np.full((d_in, 2), 127, dtype=np.int8),
+        scale=np.array([1.0, 0.5], dtype=np.float32),
+        bias=np.zeros(2, dtype=np.float32),
+        shape=(d_in, 2),
+        bits=8,
+        per_channel=True,
+        mode="asymmetric",
+        zero_point=np.array([-128, -128], dtype=np.int8),
+    )
+    qm_wide = QuantizedModel(layers=[qlayer_wide], activation="relu")
+    x_ones = np.ones((1, d_in), dtype=np.float32)  # quantizes to +127 across all 72,000 channels, scale = 1/127
+    out_wide = forward_int8(qm_wide, x_ones, act_bits=8)
+
+    # Exact mathematical result: (72,000 * 127 * 255) * ((1/127) * [1.0, 0.5]) = 72,000 * 255 * [1.0, 0.5]
+    expected = np.array([[72000.0 * 255.0, 72000.0 * 127.5]], dtype=np.float32)
+    assert np.all(out_wide > 0.0)
+    assert np.allclose(out_wide, expected, rtol=1e-5)
+
+
+def test_issue_31_c99_header_and_onnx_exporters_bit_exact_parity(tmp_path: Path) -> None:
+    """Issue #31: Freestanding C99 header (gcc -std=c99 -Wall -Wextra -Werror) and ONNX opset>=21 parity."""
+    import importlib.util
+    import shutil
+
+    rng = np.random.default_rng(31)
+    layers = [
+        (rng.normal(0.0, 0.4, size=(25, 15)).astype(np.float32), rng.normal(0.0, 0.08, size=15).astype(np.float32)),
+        (rng.normal(0.0, 0.4, size=(15, 5)).astype(np.float32), rng.normal(0.0, 0.08, size=5).astype(np.float32)),
+    ]
+    X_cal = rng.normal(0.0, 1.0, size=(64, 25)).astype(np.float32)
+    X_test = rng.normal(0.0, 1.0, size=(24, 25)).astype(np.float32)
+
+    q4 = quantize_model(layers, bits=4, per_channel=True, mode="symmetric_full", clip_search="activation_mse", X_cal=X_cal)
+    lft1_file = save_quantized_binary(q4, tmp_path / "student_odd.lft1")
+
+    # 1) CLI + Python freestanding C99 export verification
+    hdr_cli = tmp_path / "cli_weights.h"
+    assert cli_main(["export-c-header", str(lft1_file), "-o", str(hdr_cli), "--prefix", "bench_m0"]) == 0
+    hdr_text_cli = hdr_cli.read_text(encoding="utf-8")
+    assert "alignas(16)" in hdr_text_cli
+    assert "#define LAB_FEET_SCRATCH_BYTES" in hdr_text_cli
+    assert "lab_feet_infer_w4a8" in hdr_text_cli
+    assert "lab_feet_decide_drift_abstaining_int4" in hdr_text_cli
+    assert "malloc" not in hdr_text_cli
+
+    spec = prepare_fixed_point_model(q4, X_cal=X_cal)
+    x_i8 = quantize_input_for_c99(X_test, spec["input_scale"])
+    ref_logits_i32, ref_logits_f32 = simulate_c99_fixed_point(spec, x_i8, x_is_quantized_int8=True)
+    deq_preds = q4.forward_dequant(X_test).argmax(axis=1)
+    assert float((ref_logits_f32.argmax(axis=1) == deq_preds).mean()) >= 0.91
+
+    # Compile and execute C99 header if a C compiler is available on the host
+    cc = shutil.which("gcc") or shutil.which("clang") or shutil.which("cc")
+    if cc is None and Path(r"C:\msys64\ucrt64\bin\gcc.exe").is_file():
+        cc = r"C:\msys64\ucrt64\bin\gcc.exe"
+    if cc is not None:
+        hdr_cal = tmp_path / "cal_weights.h"
+        export_c99_header(q4, hdr_cal, prefix="cal_m0", X_cal=X_cal)
+        rows_c = ",\n".join("{" + ",".join(str(int(v)) for v in row) + "}" for row in x_i8)
+        c_driver = tmp_path / "driver.c"
+        c_driver.write_text(
+            '#include <stdio.h>\n'
+            '#include "cal_weights.h"\n'
+            "int main(void) {\n"
+            f"    static const int8_t xs[{len(x_i8)}][25] = {{ {rows_c} }};\n"
+            "    int32_t logits[5];\n"
+            f"    for (int s = 0; s < {len(x_i8)}; ++s) {{\n"
+            "        int cls = lab_feet_infer_w4a8(xs[s], logits, NULL);\n"
+            '        printf("%d:%d,%d,%d,%d,%d\\n", cls, logits[0], logits[1], logits[2], logits[3], logits[4]);\n'
+            "    }\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        exe_out = tmp_path / ("driver.exe" if os.name == "nt" else "driver")
+        subprocess.run(
+            [cc, "-std=c99", "-Wall", "-Wextra", "-Werror", "-O2", str(c_driver), "-o", str(exe_out)],
+            check=True,
+        )
+        lines = subprocess.check_output([str(exe_out)], text=True).strip().splitlines()
+        assert len(lines) == len(x_i8)
+        for idx_s, line in enumerate(lines):
+            cls_str, vec_str = line.split(":")
+            c_logits = [int(tok) for tok in vec_str.split(",")]
+            assert c_logits == ref_logits_i32[idx_s].tolist()
+            assert int(cls_str) == int(np.argmax(ref_logits_i32[idx_s]))
+
+    # 2) ONNX opset >= 21 graph JSON + ModelProto export & reference/ORT parity
+    graph_qdq = export_quantized_graph(q4, opset=21, operator_mode="qdq")
+    assert graph_qdq["opset_version"] == 21
+    assert any(init["data_type"] == "INT4" for init in graph_qdq["initializers"])
+    assert np.allclose(evaluate_quantized_graph(graph_qdq, X_test), q4.forward_dequant(X_test), atol=1e-5)
+
+    graph_qlin = export_quantized_graph(q4, opset=21, operator_mode="qlinear", X_cal=X_cal)
+    assert any(node["op_type"] == "QLinearMatMul" for node in graph_qlin["nodes"])
+    py_qlin = evaluate_quantized_graph(graph_qlin, X_test)
+    assert py_qlin.shape == (24, 5)
+
+    onnx_file = tmp_path / "student_odd.onnx"
+    json_graph_file = tmp_path / "student_odd.onnx.json"
+    assert (
+        cli_main(
+            [
+                "export-onnx",
+                str(lft1_file),
+                "-o",
+                str(onnx_file),
+                "--opset",
+                "21",
+                "--json-out",
+                str(json_graph_file),
+            ]
+        )
+        == 0
+    )
+    assert onnx_file.is_file() and onnx_file.stat().st_size > 64
+    assert json_graph_file.is_file()
+
+    if importlib.util.find_spec("onnxruntime") is not None:
+        import onnxruntime as ort
+
+        so_exact = ort.SessionOptions()
+        so_exact.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        sess_exact = ort.InferenceSession(onnx_file.read_bytes(), sess_options=so_exact, providers=["CPUExecutionProvider"])
+        ort_exact = sess_exact.run(None, {"input": X_test})[0]
+        assert np.allclose(ort_exact, q4.forward_dequant(X_test), atol=1e-5)
+
+        sess_opt = ort.InferenceSession(onnx_file.read_bytes(), providers=["CPUExecutionProvider"])
+        ort_opt = sess_opt.run(None, {"input": X_test})[0]
+        assert float((ort_opt.argmax(axis=1) == q4.forward_dequant(X_test).argmax(axis=1)).mean()) >= 0.995
+
+        onnx_qlin_bytes = export_quantized_onnx(q4, opset=21, operator_mode="qlinear", X_cal=X_cal)
+        sess_qlin = ort.InferenceSession(onnx_qlin_bytes, providers=["CPUExecutionProvider"])
+        ort_qlin = sess_qlin.run(None, {"input": X_test})[0]
+        assert np.allclose(ort_qlin, py_qlin, atol=1e-5)
 
 
 def test_issues_16_17_19_ci_requirements_readme_and_english_only() -> None:

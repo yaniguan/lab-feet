@@ -11,12 +11,15 @@ instead of emitting overconfident clipped predictions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 SAFE_HOLD_LABEL: str = "SAFE_HOLD"
 SAFE_HOLD_CLASS_ID: int = -1
+INT32_MIN: int = -(1 << 31)
+INT32_MAX: int = (1 << 31) - 1
+
 REGIME_NAMES: tuple[str, ...] = (
     "idle_bench",
     "orbital_shaker_nominal",
@@ -38,23 +41,62 @@ class EdgePrediction:
     int4_clip_count: int
     int8_input_clip_count: int
     energy_margin_score: int
+    peak_logit: int = 0
 
 
 def pack_signed_int4(values_int8: np.ndarray) -> np.ndarray:
-    """Pack signed two's-complement 4-bit integers `[-8, +7]` into `uint8` (2 nibbles/byte)."""
-    flat = np.asarray(values_int8, dtype=np.int8).ravel()
+    """Pack signed two's-complement 4-bit integers `[-8, +7]` into `uint8` (2 nibbles/byte).
+
+    When `values_int8.size` is odd, pads the trailing high nibble (`bits 4..7`) with canonical `0`.
+    """
+    arr = np.asarray(values_int8)
+    if arr.dtype == np.bool_ or not np.issubdtype(arr.dtype, np.integer):
+        raise TypeError(f"pack_signed_int4 expects an integer array, got dtype={arr.dtype}")
+    flat = arr.ravel()
+    if flat.size == 0:
+        return np.empty(0, dtype=np.uint8)
     if np.any((flat < -8) | (flat > 7)):
         raise ValueError("pack_signed_int4 expects integer values in [-8, +7]")
-    if flat.size % 2 != 0:
-        flat = np.concatenate([flat, np.zeros(1, dtype=np.int8)])
-    lo = (flat[0::2].astype(np.int16) & 0x0F).astype(np.uint8)
-    hi = ((flat[1::2].astype(np.int16) & 0x0F) << 4).astype(np.uint8)
+    flat_i8 = flat.astype(np.int8, copy=False)
+    if flat_i8.size % 2 != 0:
+        flat_i8 = np.concatenate([flat_i8, np.zeros(1, dtype=np.int8)])
+    lo = (flat_i8[0::2].astype(np.int16) & 0x0F).astype(np.uint8)
+    hi = ((flat_i8[1::2].astype(np.int16) & 0x0F) << 4).astype(np.uint8)
     return (lo | hi).astype(np.uint8)
 
 
-def unpack_signed_int4(packed_u8: np.ndarray, total_elements: int) -> np.ndarray:
-    """Unpack `uint8` nibbles back into signed two's-complement `int8` in `[-8, +7]`."""
-    raw = np.asarray(packed_u8, dtype=np.uint8).ravel()
+def unpack_signed_int4(
+    packed_u8: np.ndarray,
+    total_elements: int,
+    *,
+    strict_padding: bool = True,
+) -> np.ndarray:
+    """Unpack `uint8` nibbles back into signed two's-complement `int8` in `[-8, +7]`.
+
+    Enforces exact packed byte count `raw.size == (total_elements + 1) // 2` and canonical zero
+    high-nibble padding on odd `total_elements`.
+    """
+    if isinstance(total_elements, bool) or not isinstance(total_elements, (int, np.integer)) or total_elements < 0:
+        raise ValueError(f"total_elements must be a non-negative integer, got {total_elements!r}")
+    n_elems = int(total_elements)
+    arr = np.asarray(packed_u8)
+    if arr.dtype == np.bool_ or not np.issubdtype(arr.dtype, np.integer):
+        raise TypeError(f"unpack_signed_int4 expects an integer/byte buffer, got dtype={arr.dtype}")
+    raw = arr.astype(np.uint8, copy=False).ravel()
+    expected_bytes = (n_elems + 1) // 2 if n_elems > 0 else 0
+    if raw.size != expected_bytes:
+        raise ValueError(
+            f"unpack_signed_int4 expected {expected_bytes} bytes for total_elements={n_elems}, got {raw.size}."
+        )
+    if n_elems == 0:
+        return np.empty(0, dtype=np.int8)
+    if strict_padding and (n_elems % 2 == 1):
+        pad_hi = (int(raw[-1]) >> 4) & 0x0F
+        if pad_hi != 0:
+            raise ValueError(
+                f"Non-zero high padding nibble 0x{pad_hi:X} in odd-length packed int4 buffer."
+            )
+
     lo = (raw & 0x0F).astype(np.int8)
     hi = ((raw >> 4) & 0x0F).astype(np.int8)
     lo = np.where(lo >= 8, lo - 16, lo).astype(np.int8)
@@ -62,7 +104,80 @@ def unpack_signed_int4(packed_u8: np.ndarray, total_elements: int) -> np.ndarray
     out = np.empty(raw.size * 2, dtype=np.int8)
     out[0::2] = lo
     out[1::2] = hi
-    return out[:total_elements]
+    return out[:n_elems]
+
+
+def requantize_saturate_int64(
+    acc: np.ndarray | int,
+    mult: np.ndarray | int,
+    shift: int,
+    qmin: int,
+    qmax: int,
+    *,
+    rounding: Literal["half_up", "ties_to_even"] = "half_up",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Widening `int64` fixed-point multiply-shift + saturation matching `LabFeetLean.requantSaturate`.
+
+    Returns `(saturated_i64, unclipped_shifted_i64)` so saturation rail clip counts can be measured
+    prior to clamping without 32-bit signed integer wraparound.
+    """
+    if shift < 0:
+        raise ValueError(f"shift must be >= 0, got {shift}")
+    if qmin > qmax:
+        raise ValueError(f"qmin={qmin} must be <= qmax={qmax}")
+
+    acc_i64 = np.asarray(acc, dtype=np.int64)
+    mult_i64 = np.asarray(mult, dtype=np.int64)
+    prod = acc_i64 * mult_i64
+
+    if shift == 0:
+        shifted = prod
+    elif rounding == "half_up":
+        offset = np.int64(1 << (shift - 1))
+        shifted = (prod + offset) >> shift
+    elif rounding == "ties_to_even":
+        half = np.int64(1 << (shift - 1))
+        mask = np.int64((1 << shift) - 1)
+        q_floor = prod >> shift
+        rem = prod & mask
+        gt = rem > half
+        tie = rem == half
+        odd = (q_floor & np.int64(1)) == np.int64(1)
+        shifted = q_floor + np.where(gt | (tie & odd), np.int64(1), np.int64(0))
+    else:
+        raise ValueError(f"Unsupported rounding mode {rounding!r}")
+
+    saturated = np.clip(shifted, qmin, qmax).astype(np.int64)
+    return saturated, shifted
+
+
+def decide_drift_abstaining_int4(
+    argmax_class: int,
+    l1_score: int,
+    l1_thresh: int,
+    int4_clips: int,
+    max_int4_clips: int,
+    int8_input_clips: int,
+    max_input_clips: int,
+    energy_margin: int,
+    min_energy_margin: int,
+    peak_logit: int,
+    min_peak_logit: int,
+) -> int:
+    """Bit-exact 5-gate decision function mirroring `LabFeetLean.decideDriftAbstainingInt4`.
+
+    Returns `SAFE_HOLD_CLASS_ID` (`-1`) if any of the 5 OOD/saturation/margin/peak gates trigger,
+    and `argmax_class` otherwise.
+    """
+    if (
+        (l1_score > l1_thresh)
+        or (int4_clips > max_int4_clips)
+        or (int8_input_clips > max_input_clips)
+        or (energy_margin < min_energy_margin)
+        or (peak_logit < min_peak_logit)
+    ):
+        return SAFE_HOLD_CLASS_ID
+    return int(argmax_class)
 
 
 def _quantize_symmetric_int4_per_channel(w_fp32: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -77,27 +192,40 @@ class DriftAbstainingInt4Classifier:
     """Integer-only `int8`-input / `int4`-weight+activation MLP with `< 512 B` OOD monitor."""
 
     def __init__(self, n_features: int = 24, n_hidden: int = 32, n_classes: int = 6) -> None:
+        if n_features < 1 or n_hidden < 1 or n_classes < 2:
+            raise ValueError(
+                f"Require n_features >= 1, n_hidden >= 1, n_classes >= 2; got {(n_features, n_hidden, n_classes)}."
+            )
+        if int(n_features) * 128 * 8 > INT32_MAX or int(n_hidden) * 7 * 8 > INT32_MAX:
+            raise ValueError(
+                f"Layer fan-in {(n_features, n_hidden)} exceeds worst-case signed int32 MAC accumulator bound."
+            )
         self.n_features = int(n_features)
         self.n_hidden = int(n_hidden)
         self.n_classes = int(n_classes)
 
-        # Quantized student parameters
+        # Quantized student parameters (ceiling division `(M * N + 1) // 2` preserves odd weight counts)
         self.input_scale: float = 1.0
-        self.w1_packed: np.ndarray = np.zeros((n_features * n_hidden) // 2, dtype=np.uint8)
-        self.b1_i32: np.ndarray = np.zeros(n_hidden, dtype=np.int32)
-        self.h1_requant_mult_i16: np.ndarray = np.ones(n_hidden, dtype=np.int16)
+        self.w1_packed: np.ndarray = np.zeros((self.n_features * self.n_hidden + 1) // 2, dtype=np.uint8)
+        self.b1_i32: np.ndarray = np.zeros(self.n_hidden, dtype=np.int32)
+        self.h1_requant_mult_i16: np.ndarray = np.ones(self.n_hidden, dtype=np.int16)
         self.h1_requant_shift: int = 10
 
-        self.w2_packed: np.ndarray = np.zeros((n_hidden * n_classes) // 2, dtype=np.uint8)
-        self.b2_i32: np.ndarray = np.zeros(n_classes, dtype=np.int32)
-        self.logit_mult_i16: np.ndarray = np.ones(n_classes, dtype=np.int16)
+        self.w2_packed: np.ndarray = np.zeros((self.n_hidden * self.n_classes + 1) // 2, dtype=np.uint8)
+        self.b2_i32: np.ndarray = np.zeros(self.n_classes, dtype=np.int32)
+        self.logit_mult_i16: np.ndarray = np.ones(self.n_classes, dtype=np.int16)
 
         # Compact `< 512 B` SRAM OOD + saturation monitor state (exact integer tables)
-        self.class_centroids_i8: np.ndarray = np.zeros((n_classes, n_features), dtype=np.int8)
-        self.inv_mad_u8: np.ndarray = np.ones(n_features, dtype=np.uint8)
-        self.class_l1_thresh_u16: np.ndarray = np.zeros(n_classes, dtype=np.uint16)
+        self.class_centroids_i8: np.ndarray = np.zeros((self.n_classes, self.n_features), dtype=np.int8)
+        self.inv_mad_u8: np.ndarray = np.ones(self.n_features, dtype=np.uint8)
+        self.class_l1_thresh_u16: np.ndarray = np.zeros(self.n_classes, dtype=np.uint16)
         self.scalar_thresholds_u16: np.ndarray = np.zeros(4, dtype=np.uint16)
         # [max_int4_clips, max_int8_input_clips, min_energy_margin, min_peak_logit]
+
+    def _class_label(self, class_id: int) -> str:
+        if 0 <= class_id < len(REGIME_NAMES):
+            return REGIME_NAMES[class_id]
+        return f"regime_{class_id}"
 
     @property
     def packed_weight_bytes(self) -> int:
@@ -140,7 +268,7 @@ class DriftAbstainingInt4Classifier:
         p995 = float(np.percentile(np.abs(x_train), 99.5))
         self.input_scale = max(p995 * 1.35 / 127.0, 1e-5)
 
-        # Mini-batch Adam/SGD training of compact FP32 student `24 -> 32 (clipped ReLU) -> 6`
+        # Mini-batch Adam/SGD training of compact FP32 student `d -> n_hidden (clipped ReLU) -> n_classes`
         w1 = rng.normal(0.0, np.sqrt(2.0 / d), size=(d, self.n_hidden)).astype(np.float64)
         b1 = np.zeros(self.n_hidden, dtype=np.float64)
         w2 = rng.normal(0.0, np.sqrt(2.0 / self.n_hidden), size=(self.n_hidden, self.n_classes)).astype(np.float64)
@@ -174,23 +302,60 @@ class DriftAbstainingInt4Classifier:
             db2_step = lr * decay * db2
             b2 -= db2_step
 
+        self.load_fp32_weights_and_calibrate(w1, b1, w2, b2, x_calib, y_calib, input_scale=self.input_scale)
+
+    def load_fp32_weights_and_calibrate(
+        self,
+        w1: np.ndarray,
+        b1: np.ndarray,
+        w2: np.ndarray,
+        b2: np.ndarray,
+        x_calib: np.ndarray,
+        y_calib: np.ndarray,
+        *,
+        input_scale: float | None = None,
+        act_cap: float = 3.5,
+    ) -> None:
+        """Quantize pre-trained `(w1, b1, w2, b2)` layers with saturating `int32` biases and calibrate OOD gates."""
+        w1_f64 = np.asarray(w1, dtype=np.float64)
+        b1_f64 = np.asarray(b1, dtype=np.float64)
+        w2_f64 = np.asarray(w2, dtype=np.float64)
+        b2_f64 = np.asarray(b2, dtype=np.float64)
+        if w1_f64.shape != (self.n_features, self.n_hidden) or w2_f64.shape != (self.n_hidden, self.n_classes):
+            raise ValueError(
+                f"Weight shape mismatch: got {w1_f64.shape}, {w2_f64.shape} for "
+                f"({self.n_features}, {self.n_hidden}, {self.n_classes})."
+            )
+
+        if input_scale is None:
+            p995 = float(np.percentile(np.abs(x_calib), 99.5)) if x_calib.size > 0 else 1.0
+            self.input_scale = max(p995 * 1.35 / 127.0, 1e-5)
+        else:
+            self.input_scale = max(float(input_scale), 1e-12)
+
         # Quantize Layer 1: x_q (int8) * w1_q (int4) -> requantize to int4 [0, 7]
-        w1_q, w1_scales = _quantize_symmetric_int4_per_channel(w1.astype(np.float32))
+        w1_q, w1_scales = _quantize_symmetric_int4_per_channel(w1_f64.astype(np.float32))
         self.w1_packed = pack_signed_int4(w1_q)
-        act_step = 3.5 / 7.0  # maps [0, 3.5] -> [0, 7]
-        eff_scale_1 = (self.input_scale * w1_scales) / act_step
-        self.b1_i32 = np.rint(b1 / (self.input_scale * w1_scales)).astype(np.int32)
+        act_step = max(float(act_cap) / 7.0, 1e-6)
+        denom_1 = np.maximum(self.input_scale * w1_scales.astype(np.float64), 1e-15)
+        eff_scale_1 = denom_1 / act_step
+        self.b1_i32 = np.clip(
+            np.rint(b1_f64 / denom_1), INT32_MIN + 1, INT32_MAX
+        ).astype(np.int32)
         self.h1_requant_mult_i16 = np.clip(
             np.rint(eff_scale_1 * (1 << self.h1_requant_shift)), 1, 32767
         ).astype(np.int16)
 
         # Quantize Layer 2: h1_q (int4) * w2_q (int4) -> integer scaled logits
-        w2_q, w2_scales = _quantize_symmetric_int4_per_channel(w2.astype(np.float32))
+        w2_q, w2_scales = _quantize_symmetric_int4_per_channel(w2_f64.astype(np.float32))
         self.w2_packed = pack_signed_int4(w2_q)
-        self.b2_i32 = np.rint(b2 / (act_step * w2_scales)).astype(np.int32)
-        max_w2_scale = float(np.max(w2_scales))
+        denom_2 = np.maximum(act_step * w2_scales.astype(np.float64), 1e-15)
+        self.b2_i32 = np.clip(
+            np.rint(b2_f64 / denom_2), INT32_MIN + 1, INT32_MAX
+        ).astype(np.int32)
+        max_w2_scale = max(float(np.max(w2_scales)), 1e-12)
         self.logit_mult_i16 = np.clip(
-            np.rint((w2_scales / max_w2_scale) * 256.0), 1, 32767
+            np.rint((w2_scales.astype(np.float64) / max_w2_scale) * 256.0), 1, 32767
         ).astype(np.int16)
 
         # Calibrate integer L1-Mahalanobis + int4 saturation monitor strictly on `x_calib`
@@ -217,7 +382,7 @@ class DriftAbstainingInt4Classifier:
         cal_peaks: list[int] = []
 
         for idx in range(x_calib.shape[0]):
-            pred_c, l1_d, h_clips, in_clips, margin, peak_logit = self._forward_integer_core(x_calib[idx])
+            pred_c, _, h_clips, in_clips, margin, peak_logit = self._forward_integer_core(x_calib[idx])
             cal_l1_per_class[int(y_calib[idx])].append(
                 self._compute_class_l1(x_cal_q[idx], int(y_calib[idx]))
             )
@@ -232,18 +397,22 @@ class DriftAbstainingInt4Classifier:
             q99 = float(np.percentile(vals, 99.0)) if vals else 400.0
             self.class_l1_thresh_u16[c] = np.uint16(min(65535, int(round(q99 * 1.28 + 35.0))))
 
-        max_h_clips = int(np.percentile(cal_int4_clips, 99.5)) + 3
-        max_in_clips = int(np.percentile(cal_in_clips, 99.5)) + 2
-        min_margin = max(8, int(np.percentile(cal_margins, 1.0) * 0.55)) if cal_margins else 10
-        min_peak = max(12, int(np.percentile(cal_peaks, 1.0) * 0.45)) if cal_peaks else 15
+        max_h_clips = min(65535, max(0, int(np.percentile(cal_int4_clips, 99.5)) + 3)) if cal_int4_clips else 8
+        max_in_clips = min(65535, max(0, int(np.percentile(cal_in_clips, 99.5)) + 2)) if cal_in_clips else 2
+        min_margin = max(8, min(65535, int(np.percentile(cal_margins, 1.0) * 0.55))) if cal_margins else 10
+        min_peak = max(12, min(65535, int(np.percentile(cal_peaks, 1.0) * 0.45))) if cal_peaks else 15
         self.scalar_thresholds_u16[:] = np.array(
             [max_h_clips, max_in_clips, min_margin, min_peak], dtype=np.uint16
         )
-        assert self.extra_sram_bytes < 512
 
     def _quantize_input_adc(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Simulate `int8` sensor ADC quantization and count +/-127 saturation rail hits."""
-        raw_q = np.rint(np.asarray(x, dtype=np.float64) / self.input_scale).astype(np.int32)
+        scaled = np.clip(
+            np.asarray(x, dtype=np.float64) / max(self.input_scale, 1e-12),
+            float(INT32_MIN + 1),
+            float(INT32_MAX),
+        )
+        raw_q = np.rint(scaled).astype(np.int32)
         in_clips = np.sum((raw_q <= -127) | (raw_q >= 127), axis=-1)
         x_q = np.clip(raw_q, -128, 127).astype(np.int8)
         return x_q, in_clips
@@ -255,8 +424,11 @@ class DriftAbstainingInt4Classifier:
         return int(np.sum(diff * self.inv_mad_u8.astype(np.int32)))
 
     def _forward_integer_core(self, x_1d: np.ndarray) -> tuple[int, int, int, int, int, int]:
-        """Pure integer `int8`/`int4`/`int32` forward pass + OOD/saturation telemetry."""
-        x_q, in_clips_arr = self._quantize_input_adc(x_1d)
+        """Pure integer `int8`/`int4`/`int32`/`int64` forward pass + OOD/saturation telemetry."""
+        x_arr = np.asarray(x_1d, dtype=np.float64).reshape(-1)
+        if x_arr.size != self.n_features:
+            raise ValueError(f"Expected {self.n_features} input features, got {x_arr.size}.")
+        x_q, in_clips_arr = self._quantize_input_adc(x_arr)
         in_clips = int(in_clips_arr)
 
         w1_q = unpack_signed_int4(self.w1_packed, self.n_features * self.n_hidden).reshape(
@@ -266,16 +438,37 @@ class DriftAbstainingInt4Classifier:
             self.n_hidden, self.n_classes
         )
 
-        # Layer 1 integer MAC (`int32` accumulator) + fixed-point shift to `int4` `[0, 7]`
-        acc1_i32 = x_q.astype(np.int32) @ w1_q.astype(np.int32) + self.b1_i32
-        scaled1_i32 = (acc1_i32 * self.h1_requant_mult_i16.astype(np.int32)) >> self.h1_requant_shift
-        # Count hidden units exceeding upper int4 rail (+7) before clipping
-        int4_clips = int(np.sum(scaled1_i32 > 7))
-        h1_i4 = np.clip(scaled1_i32, 0, 7).astype(np.int8)
+        # Layer 1 integer MAC (`int32` saturating bias add) + widening `int64` round-half-up shift
+        dot1_i32 = np.matmul(x_q.astype(np.int32), w1_q.astype(np.int32))
+        acc1_i32 = np.clip(
+            dot1_i32.astype(np.int64) + self.b1_i32.astype(np.int64), INT32_MIN, INT32_MAX
+        ).astype(np.int32)
+        h1_sat_i64, scaled1_i64 = requantize_saturate_int64(
+            acc1_i32,
+            self.h1_requant_mult_i16,
+            self.h1_requant_shift,
+            0,
+            7,
+            rounding="half_up",
+        )
+        # Count hidden units exceeding upper int4 rail (+7) in widened int64 BEFORE clamping
+        int4_clips = int(np.sum(scaled1_i64 > 7))
+        h1_i4 = h1_sat_i64.astype(np.int8)
 
-        # Layer 2 integer MAC (`int32` accumulator)
-        acc2_i32 = h1_i4.astype(np.int32) @ w2_q.astype(np.int32) + self.b2_i32
-        logits_i32 = (acc2_i32 * self.logit_mult_i16.astype(np.int32)) >> 4
+        # Layer 2 integer MAC (`int32` saturating bias add) + widening `int64` round-half-up shift
+        dot2_i32 = np.matmul(h1_i4.astype(np.int32), w2_q.astype(np.int32))
+        acc2_i32 = np.clip(
+            dot2_i32.astype(np.int64) + self.b2_i32.astype(np.int64), INT32_MIN, INT32_MAX
+        ).astype(np.int32)
+        logits_sat_i64, _ = requantize_saturate_int64(
+            acc2_i32,
+            self.logit_mult_i16,
+            4,
+            INT32_MIN,
+            INT32_MAX,
+            rounding="half_up",
+        )
+        logits_i32 = logits_sat_i64.astype(np.int32)
 
         pred_class = int(np.argmax(logits_i32))
         sorted_logits = np.sort(logits_i32)
@@ -288,15 +481,16 @@ class DriftAbstainingInt4Classifier:
 
     def predict_naive_int4_argmax(self, x_1d: np.ndarray) -> EdgePrediction:
         """Baseline `int4` classifier emitting `argmax` blindly without drift/clip abstention."""
-        pred_c, l1_d, h_clips, in_clips, margin, _ = self._forward_integer_core(x_1d)
+        pred_c, l1_d, h_clips, in_clips, margin, peak_logit = self._forward_integer_core(x_1d)
         return EdgePrediction(
             class_id=pred_c,
-            label=REGIME_NAMES[pred_c],
+            label=self._class_label(pred_c),
             abstained=False,
             l1_mahalanobis_score=l1_d,
             int4_clip_count=h_clips,
             int8_input_clip_count=in_clips,
             energy_margin_score=margin,
+            peak_logit=peak_logit,
         )
 
     def predict_drift_abstaining_int4(self, x_1d: np.ndarray) -> EdgePrediction:
@@ -308,14 +502,20 @@ class DriftAbstainingInt4Classifier:
         min_margin = int(self.scalar_thresholds_u16[2])
         min_peak = int(self.scalar_thresholds_u16[3])
 
-        abstain = bool(
-            (l1_d > l1_thresh)
-            or (h_clips > max_h_clips)
-            or (in_clips > max_in_clips)
-            or (margin < min_margin)
-            or (peak_logit < min_peak)
+        chosen_class = decide_drift_abstaining_int4(
+            pred_c,
+            l1_d,
+            l1_thresh,
+            h_clips,
+            max_h_clips,
+            in_clips,
+            max_in_clips,
+            margin,
+            min_margin,
+            peak_logit,
+            min_peak,
         )
-        if abstain:
+        if chosen_class == SAFE_HOLD_CLASS_ID:
             return EdgePrediction(
                 class_id=SAFE_HOLD_CLASS_ID,
                 label=SAFE_HOLD_LABEL,
@@ -324,15 +524,17 @@ class DriftAbstainingInt4Classifier:
                 int4_clip_count=h_clips,
                 int8_input_clip_count=in_clips,
                 energy_margin_score=margin,
+                peak_logit=peak_logit,
             )
         return EdgePrediction(
             class_id=pred_c,
-            label=REGIME_NAMES[pred_c],
+            label=self._class_label(pred_c),
             abstained=False,
             l1_mahalanobis_score=l1_d,
             int4_clip_count=h_clips,
             int8_input_clip_count=in_clips,
             energy_margin_score=margin,
+            peak_logit=peak_logit,
         )
 
 
@@ -417,6 +619,7 @@ def run_benchmark(seed: int = 20261123) -> dict[str, Any]:
         n_features=n_features, n_hidden=n_hidden, n_classes=n_classes
     )
     clf.fit_and_calibrate(x_train, y_train, x_calib, y_calib, seed=seed)
+    assert clf.extra_sram_bytes < 512
 
     naive_id_correct = 0
     guarded_id_correct = 0

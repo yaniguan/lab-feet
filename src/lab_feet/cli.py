@@ -23,6 +23,8 @@ from .benchmarks import (  # noqa: E402
     run_digits_benchmark,
     run_wetlab_acoustic_benchmark,
 )
+from .export_c import export_c99_header  # noqa: E402
+from .export_onnx import export_quantized_onnx  # noqa: E402
 from .serialize import compute_binary_header_bytes, load_quantized_binary, save_quantized_binary  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -199,10 +201,34 @@ def _cmd_export_schema(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_c_header(args: argparse.Namespace) -> int:
+    model = load_quantized_binary(args.input)
+    export_c99_header(
+        model,
+        args.output,
+        prefix=args.prefix,
+        input_scale=args.input_scale,
+    )
+    return 0
+
+
+def _cmd_export_onnx(args: argparse.Namespace) -> int:
+    model = load_quantized_binary(args.input)
+    export_quantized_onnx(
+        model,
+        args.output,
+        opset=args.opset,
+        operator_mode=args.mode,
+        input_scale=args.input_scale,
+        json_out=args.json_out,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lab-feet",
-        description="Edge distillation, int8/4-bit quantization, and LFT1 binary runtime CLI.",
+        description="Edge distillation, int8/4-bit quantization, and LFT1/C99/ONNX runtime CLI.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -223,6 +249,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_sch = sub.add_parser("export-schema", help="Print JSON Schema for benchmark reports")
     p_sch.add_argument("--output", "-o", default=None)
     p_sch.set_defaults(func=_cmd_export_schema)
+
+    p_chdr = sub.add_parser("export-c-header", help="Export LFT1 model to freestanding C99 .h header")
+    p_chdr.add_argument("input", help="Input .lft1 binary model path")
+    p_chdr.add_argument("--output", "-o", required=True, help="Output .h header path")
+    p_chdr.add_argument("--prefix", default="lab_feet_model", help="C symbol prefix")
+    p_chdr.add_argument("--input-scale", type=float, default=None, help="Optional int8 ADC input scale")
+    p_chdr.set_defaults(func=_cmd_export_c_header)
+
+    p_onnx = sub.add_parser("export-onnx", help="Export LFT1 model to ONNX opset >= 21 .onnx graph")
+    p_onnx.add_argument("input", help="Input .lft1 binary model path")
+    p_onnx.add_argument("--output", "-o", required=True, help="Output .onnx file path")
+    p_onnx.add_argument("--opset", type=int, default=21, help="ONNX opset version (>= 21)")
+    p_onnx.add_argument("--mode", choices=["qdq", "qlinear"], default="qdq", help="ONNX quantization operator mode")
+    p_onnx.add_argument("--input-scale", type=float, default=None, help="Optional static input scale for qlinear")
+    p_onnx.add_argument("--json-out", default=None, help="Optional JSON graph dump path")
+    p_onnx.set_defaults(func=_cmd_export_onnx)
 
     return parser
 
