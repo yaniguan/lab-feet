@@ -104,30 +104,55 @@ Recent results, newest first. Date = first arXiv version; each line is a short s
 
 Full technical specification: [`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md).
 
+## 15-Repository Auto-Lab Wire Contract (autolab-wire/v1)
+
+[`autolab_wire.py`](autolab_wire.py) implements the Layer `L0` edge runtime node (`REPO_ID = "lab-feet"`, `LAYER = "L0"`) in the 15-repository `auto-lab` packet pipeline (`autolab-wire/v1`):
+
+- **Upstream inputs**:
+  - [`stepbot`](https://github.com/yaniguan/stepbot) (`L1`): Supplies `stepbot_execution` (`protocol_sha256`, `lean-mcp/v1` dispatch receipt, and `next_deck_epoch`).
+  - [`lab-hands`](https://github.com/yaniguan/lab-hands) (`L1`): Supplies `manipulation` (`start_well`, `target_well`, `collision_free`, RRT `waypoints`, `path_length_rad`, and `clearance_mm`).
+  - [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) (`L3`): Supplies `SplitGuard`-isolated, anti-hack RLVR post-trained checkpoints distilled into compact `L0` edge students.
+- **`L0` verification & execution (`process_packet`)**:
+  - Short-circuits unchanged when `packet["halted"]` is `True`, and blocks tainted upstream checkpoints (`split_guard_clean is False`) with `L0_FEET_UPSTREAM_SPLITGUARD_BLOCK`.
+  - Supports hot-loading distilled student checkpoints (`LFT1` bytes/hex/path, `.npz`, or `(W, b)` layers) keyed in an LRU cache by SHA-256 (`checkpoint_sha256`) alongside canonical calibration verification (`calibration_sha256`), halting on mismatch with `L0_FEET_CHECKPOINT_SHA256_MISMATCH`.
+  - Derives a deterministic 24-feature benchtop sensor vector from `stepbot_execution` and `manipulation`, verifies exact two's-complement `[-8, 7]` nibble round-tripping (`pack_4bit` / `unpack_4bit`), runs quantized `int8` (`W8A8`) and `4-bit` (`W4A8`) `int32`-accumulator monitor inference (`forward_int8`), and checks `< 512 B` OOD/saturation `SAFE_HOLD` (`L0_FEET_SAFE_HOLD_ABSTAIN`).
+  - Enforces the Lean fidelity cap `quant_acc_drop_permille <= max_acc_drop_permille` (`invariant = "nibble_pack_roundtrip_and_drift_cap"`), setting `halted = True` and `halt_reason = "L0_FEET_QUANT_DRIFT_BLOCK"` on drift excess.
+- **Downstream output**:
+  - [`lab-attrib`](https://github.com/yaniguan/lab-attrib) (`L4`): Consumes `out["edge_runtime"]` (`quantization`, `nibble_roundtrip_exact`, `packed_bytes`, `dispense_error_permille`, `aspiration_clean`, `incubation_window_clean`, `seal_intact`, `checkpoint_sha256`, `calibration_sha256`, `fp32_int4_pred_agree`, `safe_hold_abstained`) for post-execution causal blame attribution, NNLS precursor deconvolution, and SHA-256 `CertifiedLedger` gating.
+
 ## Repository Layout
 
 ```text
 lab-feet/
 ├── .github/workflows/
 │   └── demo.yml                      # Linux / Windows / macOS CI running pytest & threshold gates
+├── community_extensions/
+│   └── drift_abstaining_int4.py      # <512 B SRAM int4/int8 OOD & clipping SAFE_HOLD monitor
 ├── demo/
 │   ├── distill_quantize.py           # Benchmark runner (digits, wet-lab regimes, lab-ears AE)
 │   └── output.txt                    # Captured accuracy, byte-size, and latency percentile report
 ├── docs/
 │   └── ARCHITECTURE_AND_HISTORY.md   # Deep technical specification & mathematical invariants
+├── lean/
+│   └── LabFeetLean.lean              # Lean 4 nibble, saturating requant, SRAM & 5-gate OOD proofs
 ├── schema/
 │   └── benchmark_report.schema.json  # Draft 2020-12 JSON Schema for benchmark JSON reports
 ├── src/lab_feet/
 │   ├── __init__.py                   # Public package API
 │   ├── benchmarks.py                 # Digits, wet-lab spectral, and lab-ears AE benchmarks
-│   ├── cli.py                        # `lab-feet` CLI (benchmark, inspect-binary, export-schema)
+│   ├── cli.py                        # `lab-feet` CLI (benchmark, inspect-binary, export-c-header, export-onnx)
 │   ├── distill.py                    # Zero-mean MSE & hybrid T^2 KL + CE Adam distillation
 │   ├── equivariant.py                # SO(3)-equivariant scalar irrep weight quantization & guards
-│   ├── quantize.py                   # Symmetric/asymmetric per-tensor/channel int8/4-bit & W8A8
+│   ├── export_c.py                   # Freestanding zero-malloc C99 / CMSIS-NN `.rodata` header exporter
+│   ├── export_onnx.py                # ONNX opset >= 21 INT4/INT8 QDQ & QLinearMatMul graph/proto exporter
+│   ├── quantize.py                   # Symmetric/asymmetric per-tensor/channel int8/4-bit, SmoothQuant & W8A8
 │   ├── runtime.py                    # Cross-platform cpu_model, BLAS pinning, forward & percentiles
 │   └── serialize.py                  # Flat little-endian LFT1 binary serializer & verifier
 ├── tests/
-│   └── test_distill_quantize.py      # Offline pytest suite covering issues #1..#24
+│   ├── test_autolab_wire.py          # autolab-wire/v1 L0 packet, SHA-256 hot-load & telemetry tests
+│   ├── test_community_extensions.py  # <512 B SRAM OOD/clipping monitor & Lean 5-gate parity tests
+│   └── test_distill_quantize.py      # Offline pytest suite covering issues #1..#31
+├── autolab_wire.py                   # L0 node for the 15-repo autolab-wire/v1 pipeline
 ├── LICENSE                           # MIT License
 ├── pyproject.toml                    # Package build metadata & `lab-feet` console script
 ├── README.md                         # Overview, benchmark summary, and edge-runtime catalog

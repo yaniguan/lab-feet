@@ -46,9 +46,30 @@ The $T^2$ factor ensures $\nabla_{z_s}\!\left[T^2\,\mathrm{KL}(p_T \| q_T)\right
 
 ---
 
-## 4. History
+## 4. 15-Repository Auto-Lab Wire Contract (`autolab-wire/v1`)
+
+`autolab_wire.py` (`REPO_ID = "lab-feet"`, `LAYER = "L0"`) connects `lab-feet` to the 15-repository `auto-lab` execution and learning loop (`lab-ears`, `lab-ask-why`, `lab-decide`, `lab-automation-atlas`, `buy-or-make`, `labshift`, `lab-rehearsal`, `lab-verify`, `stepbot`, `lab-hands`, `lab-feet`, `lab-attrib`, `twinstep`, `labfill`, `labbench-posttrain`):
+
+- **Upstream Interfaces**:
+  - `stepbot` (`L1`): Provides `stepbot_execution` (`protocol_sha256`, `lean-mcp/v1` execution receipt, `next_deck_epoch`).
+  - `lab-hands` (`L1`): Provides `manipulation` (`start_well`, `target_well`, `collision_free`, `waypoints`, `path_length_rad`, `clearance_mm`).
+  - `labbench-posttrain` (`L3`): Provides `SplitGuard`-verified, anti-hack RLVR post-trained policies for distillation into compact `L0` edge models.
+- **`L0` Wire Execution & Guardrail (`process_packet`)**:
+  - Deep-copies the incoming `autolab-wire/v1` packet, returns halted packets unchanged (`halted == True`), and blocks tainted upstream checkpoints (`split_guard_clean is False`) with `L0_FEET_UPSTREAM_SPLITGUARD_BLOCK`.
+  - Supports hot-loading `LFT1`/`.npz`/`(W, b)` student checkpoints verified against `checkpoint_sha256` and canonical `calibration_sha256` (`L0_FEET_CHECKPOINT_SHA256_MISMATCH` on mismatch).
+  - Maps `stepbot_execution` and `manipulation` deterministically into a 24-channel benchtop sensor feature vector, executes `pack_4bit` / `unpack_4bit` two's-complement nibble round-trip verification over `[-8, 7]` and model weight layers (`packed_bytes = 240`), runs `W8A8` / `W4A8` `int32`-accumulator inference via `forward_int8`, and evaluates the `< 512 B` 5-gate `DriftAbstainingInt4Classifier` OOD/saturation monitor (`L0_FEET_SAFE_HOLD_ABSTAIN`).
+  - Enforces the Lean drift ceiling `quant_acc_drop_permille <= max_acc_drop_permille`; violations halt the packet with `halt_reason = "L0_FEET_QUANT_DRIFT_BLOCK"`.
+  - Records `trace` and `bottom_reasoning_traces` (`invariant = "nibble_pack_roundtrip_and_drift_cap"`).
+- **Downstream Interface**:
+  - `lab-attrib` (`L4`): Reads `out["edge_runtime"]` (`quantization = "int8_and_4bit"`, `nibble_roundtrip_exact`, `packed_bytes`, `dispense_error_permille`, `aspiration_clean`, `incubation_window_clean`, `seal_intact`, `checkpoint_sha256`, `calibration_sha256`, `fp32_int4_pred_agree`, `safe_hold_abstained`) to separate robotic execution artifacts (`EXECUTION_ARTIFACT`) and precursor ghost peaks (`AMBIGUOUS_CHARACTERIZATION`) from certified results admitted into the SHA-256 `CertifiedLedger`.
+
+---
+
+## 5. History
 
 | Date | Ref | Summary |
 |---|---|---|
 | `2026-11-18` | `a7b1532` (`main`) | Initial CPU logit-regression distillation + per-tensor `int8`/`4-bit` demo and resource catalog. |
 | `2026-11-23` | `0.2.0` (`fix/resolve-audit-issues`) | Resolved audit issues `#1..#24`: packaged `src/lab_feet/` + `lab-feet` CLI, cross-platform `cpu_model`, single-thread BLAS percentile timing, leakage-free `train/val/test` splits, hybrid `KL(T^2)+CE` & zero-mean MSE distillation, per-channel/asymmetric/MSE-clipped `int8` & `4-bit` `QuantizedModel`, `W8A8` `int32` matmul, `LFT1` binary serializer, wet-lab & `lab-ears` benchmarks, $SO(3)$-equivariant quantization, multi-OS CI, and `pytest` suite. |
+| `2026-11-23` | `autolab-wire/v1` | Added `autolab_wire.py` (`L0` edge runtime wire node) and `tests/test_autolab_wire.py` connecting upstream `stepbot`, `lab-hands`, and `labbench-posttrain` to downstream causal blame gate `lab-attrib`. |
+| `2026-11-25` | `fix/phase2-audit-and-wire` | Resolved Phase-2 audit issues `#26..#31`: calibrated activation clipping, unsigned post-ReLU & SmoothQuant (`#26`), odd-length 4-bit `orig_len` & `LFT1` payload validation (`#27`), `int64` saturating requantization & `int32` MAC tiling (`#28`), `LabFeetLean` nibble/requant/5-gate theorems (`#29`), SHA-256 checkpoint hot-loading in `autolab_wire.py` (`#30`), and freestanding C99 `.h` + ONNX `opset >= 21` exporters (`#31`). |

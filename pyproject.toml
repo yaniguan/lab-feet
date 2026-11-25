@@ -20,6 +20,9 @@ dev = [
     "pytest>=8.0",
     "jsonschema>=4.20",
 ]
+edge = [
+    "onnxruntime>=1.19",
+]
 
 [project.scripts]
 lab-feet = "lab_feet.cli:main"
