@@ -1,33 +1,51 @@
-﻿CPU: AMD64 Family 26 Model 96 Stepping 0, AuthenticAMD
+﻿CPU: AMD64 Family 26 Model 96 Stepping 0, AuthenticAMD (seed 0)
 train=1068 val=189 test=540 features=64
 teacher soft probs softmax(logits/T): mean max prob = 0.7398
 distillation temperature T=4.0 (hybrid KL T^2 weight=0.75, CE alpha=0.25)
 latency: single-thread BLAS batch-1 passes (warmup=200, timed=2000)
 
-model                           val_acc test_acc  params weight_bytes  med_us  p95_us  p99_us  iqr_us
------------------------------------------------------------------------------------------------------
-teacher (256,256) fp32           1.0000   0.9778   85002       340008   12.80   18.40   25.60    0.20
-student hard-label fp32          1.0000   0.9759    2410         9640    5.40    5.60    8.60    0.10
-student uncentered-MSE fp32      0.9894   0.9759    2410         9640    8.70    9.00    9.60    3.40
-student zero-mean-MSE fp32       0.9841   0.9778    2410         9640    5.40    8.70    9.00    0.10
-student hybrid KL(T^2)+CE fp32   0.9947   0.9852    2410         9640    5.40    8.60    8.90    0.10
-student KL int8 (per-tensor)     0.9947   0.9852    2410         2544    5.40    5.60    8.80    0.10
-student KL int8 W8A8 (int32)     0.9947   0.9852    2410         2544   40.30   63.10   98.51    0.40
-student KL 4-bit (per-tensor)    0.9894   0.9852    2410         1360    8.70    8.90    9.10    0.10
-student KL 4-bit (per-channel)   0.9841   0.9815    2410         1520    8.80    8.90    9.20    0.10
-student KL 4-bit (asym-pc)       0.9894   0.9815    2410         1562    5.40    8.90   14.91    0.10
-student KL 4-bit (pc+MSE-clip)   0.9894   0.9815    2410         1520    8.70    8.90    9.20    0.10
+model                                           val_acc test_acc  params weight_bytes  med_us  p95_us  p99_us  iqr_us
+---------------------------------------------------------------------------------------------------------------------
+teacher (256,256) fp32                           1.0000   0.9778   85002       340008   29.00   36.00   80.75   11.70
+sklearn MLPClassifier hard-label                 1.0000   0.9759    2410         9640    9.30   14.40   30.21    3.70
+student same-trainer CE fp32                     0.9947   0.9815    2410         9640   10.60   21.10   77.30    5.10
+student uncentered-MSE fp32                      0.9894   0.9759    2410         9640   14.70   18.30   62.04    1.10
+student zero-mean-MSE fp32                       0.9841   0.9778    2410         9640   10.70   19.40   79.10    5.50
+student hybrid KL(T^2)+CE fp32                   0.9947   0.9852    2410         9640   16.10   21.41   82.91    4.90
+student KL int8 pt (dequantized fp32 timing)     0.9947   0.9852    2410         2544   11.60   20.40   58.83    4.30
+student KL int8 W8A8 (int32)                     0.9947   0.9852    2410         2544  109.20  297.42  670.37   58.53
+student KL 4-bit pt (dequantized fp32 timing)    0.9894   0.9852    2410         1360   12.10   17.40   64.37    3.90
+student KL 4-bit pc (dequantized fp32 timing)    0.9841   0.9815    2410         1520   12.40   17.31   69.01    0.80
+student KL 4-bit asym-pc (dequantized fp32 timing)  0.9894   0.9815    2410         1562    9.30   15.10   52.61    4.10
+student KL 4-bit pc+MSE (dequantized fp32 timing)  0.9894   0.9815    2410         1520   12.10   14.40   22.11    3.80
+student KL 4-bit W4A8 (int32)                    0.9894   0.9833    2410         1520  203.70  474.54  842.99   68.12
+student KL 4-bit WHT+GPTQ W4A8 (int32)           0.9894   0.9833    2410         1520  475.75 1118.32 1563.50  243.82
+student KL 4-bit C99 fixed-point (int32)         0.9947   0.9852    2410         1520  186.60  394.05  798.57   59.03
 
-prediction agreement with KL fp32 student: int8=1.0000 W8A8=1.0000 4bit-pt=0.9926 4bit-pc+MSE=0.9963
+prediction agreement with KL fp32 student: int8-deq=1.0000 W8A8=1.0000 4bit-W4A8=0.9944 4bit-WHT+GPTQ=0.9944
 LFT1 binary verification: payload=1520 B + header=64 B = 1584 B total
-convergence: teacher(iter=56, loss=0.0015, ok=True) | hard(iter=239, loss=0.0089, ok=True) | KL+CE(epochs=240, loss=0.0353)
+convergence: teacher(iter=56, loss=0.0015, ok=True) | sklearn-hard(iter=239, loss=0.0089, ok=True) | same-trainer-CE(epochs=240, loss=0.0011, ok=True) | KL+CE(epochs=240, loss=0.0353, ok=True)
 
-=== Wet-Lab Instrument Spectral Regime Distillation (6 classes, 48 mel features) ===
-  wetlab teacher (256,256) fp32    val=0.6720 test=0.6648 bytes=319512 med_us= 17.10
-  wetlab student (16,) hard fp32   val=0.6402 test=0.6019 bytes=  3544 med_us=  8.20
-  wetlab student (16,) KL+CE fp32  val=0.7037 test=0.6167 bytes=  3544 med_us=  8.25
-  wetlab student (16,) int8 pc     val=0.7037 test=0.6167 bytes=  1040 med_us=  8.60
-  wetlab student (16,) 4-bit pc+MSE val=0.7037 test=0.6167 bytes=   608 med_us=  8.70
+=== Multi-Seed Digits Comparison (10 split-and-init seeds 0..9, T=4.0, alpha=0.25) ===
+model                                        val_acc (mean +- std)   test_acc (mean +- std)            range
+------------------------------------------------------------------------------------------------------------
+teacher (256,256) fp32                            0.9825 +- 0.0095         0.9774 +- 0.0046 [0.9704, 0.9870]
+sklearn MLPClassifier hard-label                  0.9741 +- 0.0135         0.9700 +- 0.0076 [0.9611, 0.9852]
+student same-trainer CE fp32                      0.9831 +- 0.0094         0.9756 +- 0.0057 [0.9630, 0.9833]
+student hybrid KL(T^2)+CE fp32                    0.9852 +- 0.0074         0.9748 +- 0.0049 [0.9667, 0.9852]
+student KL int8 W8A8 (int32)                      0.9847 +- 0.0076         0.9750 +- 0.0048 [0.9667, 0.9852]
+student KL 4-bit W4A8 (int32)                     0.9799 +- 0.0088         0.9744 +- 0.0045 [0.9685, 0.9833]
+student KL 4-bit WHT+GPTQ W4A8 (int32)            0.9825 +- 0.0089         0.9739 +- 0.0048 [0.9667, 0.9833]
+KL+CE vs same-trainer CE (win / tie / loss over 10 seeds): 5 / 0 / 5 (mean test_acc diff = -0.0007)
 
-=== lab-ears Autoencoder Compression (320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320) ===
-  params=117576 fp32=470304 B -> int8=123456 B -> 4-bit=65088 B (7.23x compression) 4-bit anomaly AUROC=0.9909
+=== Synthetic Wet-Lab Toy Regime Distillation (6 classes, 48 i.i.d. Gaussian features) ===
+  synthetic wetlab teacher (256,256) fp32              val=0.6720 test=0.6648 bytes=319512 med_us= 46.85
+  synthetic wetlab sklearn MLPClassifier hard-label    val=0.6402 test=0.6019 bytes=  3544 med_us= 19.40
+  synthetic wetlab same-trainer CE (16,) fp32          val=0.6720 test=0.6204 bytes=  3544 med_us= 11.70
+  synthetic wetlab student (16,) KL+CE fp32            val=0.7037 test=0.6167 bytes=  3544 med_us= 16.50
+  synthetic wetlab int8 pc (dequantized fp32 timing)   val=0.7037 test=0.6167 bytes=  1040 med_us= 14.50
+  synthetic wetlab 4-bit pc+MSE (dequantized fp32 timing) val=0.6825 test=0.6130 bytes=   608 med_us= 14.60
+  synthetic wetlab 4-bit W4A8 (int32)                  val=0.6878 test=0.6185 bytes=   608 med_us=266.90
+
+=== Synthetic lab-ears 8-D Subspace Autoencoder Compression (320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320) ===
+  params=117576 fp32=470304 B -> int8=123456 B -> 4-bit=65088 B (7.23x compression) 4-bit anomaly AUROC=0.9936

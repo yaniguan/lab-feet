@@ -21,6 +21,7 @@ dev = [
     "jsonschema>=4.20",
 ]
 edge = [
+    "onnx>=1.16",
     "onnxruntime>=1.19",
 ]
 

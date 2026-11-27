@@ -1,0 +1,2553 @@
+{
+  "schema_version": "lab-feet-real-benchmarks/v1",
+  "url_verification": [
+    {
+      "dataset_id": "mnist1d",
+      "url": "https://raw.githubusercontent.com/greydanus/mnist1d/master/mnist1d_data.pkl",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "uci_gas_sensor_drift",
+      "url": "https://archive.ics.uci.edu/static/public/224/gas+sensor+array+drift+dataset.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "uci_har_inertial",
+      "url": "https://archive.ics.uci.edu/static/public/240/human+activity+recognition+using+smartphones.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "cwru_bearing_vibration",
+      "url": "https://huggingface.co/datasets/odysseywt/CWRU/resolve/main/CWRU.csv",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "uci_hydraulic_vibration",
+      "url": "https://archive.ics.uci.edu/static/public/447/condition+monitoring+of+hydraulic+systems.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "sers_bacteria_raman_2026",
+      "url": "https://raw.githubusercontent.com/erkankaratas-eng/sers-gna-bacteria/main/data/sers_spectra_preprocessed.csv",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "ethanol_nir_spectroscopy",
+      "url": "https://www.timeseriesclassification.com/aeon-toolkit/EthanolLevel.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "olive_oil_ftir",
+      "url": "https://www.timeseriesclassification.com/aeon-toolkit/OliveOil.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "coffee_ftir",
+      "url": "https://www.timeseriesclassification.com/aeon-toolkit/Coffee.zip",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "dataset_id": "meat_ftir",
+      "url": "https://www.timeseriesclassification.com/aeon-toolkit/Meat.zip",
+      "ok": true,
+      "status": 200
+    }
+  ],
+  "datasets_3seed": {
+    "mnist1d": {
+      "dataset_id": "mnist1d",
+      "spdx_license": "Apache-2.0",
+      "modality": "1d_signal",
+      "n_samples": 5000,
+      "n_features": 40,
+      "n_classes": 10,
+      "archive_bytes": 1642012,
+      "raw_sha256": "e95257676e9fb04568e46dda007da22cc8664ccba1451456afde55d7f6dd6aa5",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 3200,
+          "val": 800,
+          "test": 1000,
+          "n_features": 40,
+          "n_classes": 10
+        },
+        "teacher_fp32": {
+          "mean": 0.5891,
+          "std": 0.012,
+          "min": 0.573,
+          "max": 0.6016
+        },
+        "student_ce_fp32": {
+          "mean": 0.5587,
+          "std": 0.0118,
+          "min": 0.544,
+          "max": 0.5728
+        },
+        "student_kl_fp32": {
+          "mean": 0.5484,
+          "std": 0.0077,
+          "min": 0.542,
+          "max": 0.5592
+        },
+        "student_int8_w8a8": {
+          "mean": 0.5425,
+          "std": 0.0114,
+          "min": 0.53,
+          "max": 0.5576
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.5532,
+          "std": 0.004,
+          "min": 0.548,
+          "max": 0.5576
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.5464,
+          "std": 0.0125,
+          "min": 0.536,
+          "max": 0.564
+        },
+        "student_params": 1642,
+        "student_int4_bytes": 1136,
+        "spectral_resnet1d": {
+          "params": 39082,
+          "fp32_bytes": 156328,
+          "packed_4bit_bytes": 21776,
+          "fp32_test_acc": {
+            "mean": 0.9394,
+            "std": 0.0032,
+            "min": 0.9352,
+            "max": 0.943
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.9352,
+            "std": 0.0057,
+            "min": 0.9272,
+            "max": 0.94
+          }
+        }
+      }
+    },
+    "uci_gas_sensor_drift": {
+      "dataset_id": "uci_gas_sensor_drift",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "chemical_gas_sensor_drift",
+      "n_samples": 13910,
+      "n_features": 128,
+      "n_classes": 6,
+      "archive_bytes": 9989262,
+      "raw_sha256": "91e8f466f202e7a093d657673ce47311c3e90416f7df3057966058961c351fe4",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 8345,
+          "val": 2087,
+          "test": 3478,
+          "n_features": 128,
+          "n_classes": 6
+        },
+        "teacher_fp32": {
+          "mean": 0.9929,
+          "std": 0.0015,
+          "min": 0.9908,
+          "max": 0.9942
+        },
+        "student_ce_fp32": {
+          "mean": 0.9929,
+          "std": 0.0005,
+          "min": 0.9922,
+          "max": 0.9934
+        },
+        "student_kl_fp32": {
+          "mean": 0.9927,
+          "std": 0.0011,
+          "min": 0.9914,
+          "max": 0.994
+        },
+        "student_int8_w8a8": {
+          "mean": 0.991,
+          "std": 0.0014,
+          "min": 0.9894,
+          "max": 0.9928
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9928,
+          "std": 0.0011,
+          "min": 0.9914,
+          "max": 0.994
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.992,
+          "std": 0.0012,
+          "min": 0.9908,
+          "max": 0.9937
+        },
+        "student_params": 4326,
+        "student_int4_bytes": 2448
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 9546,
+          "val": 294,
+          "test": 4070,
+          "n_features": 128,
+          "n_classes": 6
+        },
+        "teacher_fp32": {
+          "mean": 0.6973,
+          "std": 0.0272,
+          "min": 0.6607,
+          "max": 0.726
+        },
+        "student_ce_fp32": {
+          "mean": 0.7085,
+          "std": 0.0287,
+          "min": 0.6683,
+          "max": 0.7334
+        },
+        "student_kl_fp32": {
+          "mean": 0.7286,
+          "std": 0.0285,
+          "min": 0.6929,
+          "max": 0.7627
+        },
+        "student_int8_w8a8": {
+          "mean": 0.7108,
+          "std": 0.018,
+          "min": 0.6875,
+          "max": 0.7312
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.7233,
+          "std": 0.0306,
+          "min": 0.687,
+          "max": 0.7619
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.7224,
+          "std": 0.0326,
+          "min": 0.6838,
+          "max": 0.7636
+        }
+      }
+    },
+    "uci_har_inertial": {
+      "dataset_id": "uci_har_inertial",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "inertial_imu",
+      "n_samples": 10299,
+      "n_features": 561,
+      "n_classes": 6,
+      "archive_bytes": 61005872,
+      "raw_sha256": "c00b803081a5c797cd5e4b83700a9810b38d53d9d84e01917e090e1fdbc81031",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 5881,
+          "val": 1471,
+          "test": 2947,
+          "n_features": 561,
+          "n_classes": 6
+        },
+        "teacher_fp32": {
+          "mean": 0.969,
+          "std": 0.0189,
+          "min": 0.9423,
+          "max": 0.9833
+        },
+        "student_ce_fp32": {
+          "mean": 0.9689,
+          "std": 0.0193,
+          "min": 0.9416,
+          "max": 0.9829
+        },
+        "student_kl_fp32": {
+          "mean": 0.9685,
+          "std": 0.0209,
+          "min": 0.9389,
+          "max": 0.9841
+        },
+        "student_int8_w8a8": {
+          "mean": 0.969,
+          "std": 0.0203,
+          "min": 0.9403,
+          "max": 0.9837
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9665,
+          "std": 0.0213,
+          "min": 0.9365,
+          "max": 0.9825
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9671,
+          "std": 0.0214,
+          "min": 0.9369,
+          "max": 0.9841
+        },
+        "student_params": 18182,
+        "student_int4_bytes": 9376
+      }
+    },
+    "cwru_bearing_vibration": {
+      "dataset_id": "cwru_bearing_vibration",
+      "spdx_license": "MIT",
+      "modality": "vibration_fault",
+      "n_samples": 21786,
+      "n_features": 17,
+      "n_classes": 4,
+      "archive_bytes": 7091378,
+      "raw_sha256": "e05c2b23c7b0d7450f31982e9d10f395fe0a8f92d93dca9f6997655aa1026ff9",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 13071,
+          "val": 3268,
+          "test": 5447,
+          "n_features": 17,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.9772,
+          "std": 0.0005,
+          "min": 0.9765,
+          "max": 0.9776
+        },
+        "student_ce_fp32": {
+          "mean": 0.9728,
+          "std": 0.0035,
+          "min": 0.9679,
+          "max": 0.9761
+        },
+        "student_kl_fp32": {
+          "mean": 0.9717,
+          "std": 0.0004,
+          "min": 0.9712,
+          "max": 0.9723
+        },
+        "student_int8_w8a8": {
+          "mean": 0.9474,
+          "std": 0.0023,
+          "min": 0.9442,
+          "max": 0.9493
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9512,
+          "std": 0.0042,
+          "min": 0.9455,
+          "max": 0.9554
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9424,
+          "std": 0.0064,
+          "min": 0.9337,
+          "max": 0.949
+        },
+        "student_params": 708,
+        "student_int4_bytes": 624
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 15652,
+          "val": 5200,
+          "test": 934,
+          "n_features": 17,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.5,
+          "std": 0.0,
+          "min": 0.5,
+          "max": 0.5
+        },
+        "student_ce_fp32": {
+          "mean": 0.5,
+          "std": 0.0,
+          "min": 0.5,
+          "max": 0.5
+        },
+        "student_kl_fp32": {
+          "mean": 0.5,
+          "std": 0.0,
+          "min": 0.5,
+          "max": 0.5
+        },
+        "student_int8_w8a8": {
+          "mean": 0.5453,
+          "std": 0.0574,
+          "min": 0.5,
+          "max": 0.6263
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.5,
+          "std": 0.0,
+          "min": 0.5,
+          "max": 0.5
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.6663,
+          "std": 0.2352,
+          "min": 0.5,
+          "max": 0.9989
+        }
+      }
+    },
+    "uci_hydraulic_vibration": {
+      "dataset_id": "uci_hydraulic_vibration",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "vibration_fault",
+      "n_samples": 2205,
+      "n_features": 60,
+      "n_classes": 4,
+      "archive_bytes": 76601704,
+      "raw_sha256": "24128aad2ee45eea7e6b63ebbd9992cdf25d0483a2cebefbfc13bc69079af1f2",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 1322,
+          "val": 331,
+          "test": 552,
+          "n_features": 60,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.4976,
+          "std": 0.0162,
+          "min": 0.4819,
+          "max": 0.5199
+        },
+        "student_ce_fp32": {
+          "mean": 0.5024,
+          "std": 0.0148,
+          "min": 0.4837,
+          "max": 0.5199
+        },
+        "student_kl_fp32": {
+          "mean": 0.5109,
+          "std": 0.0039,
+          "min": 0.5072,
+          "max": 0.5163
+        },
+        "student_int8_w8a8": {
+          "mean": 0.5133,
+          "std": 0.0052,
+          "min": 0.5072,
+          "max": 0.5199
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.5139,
+          "std": 0.0056,
+          "min": 0.5091,
+          "max": 0.5217
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.5199,
+          "std": 0.003,
+          "min": 0.5163,
+          "max": 0.5236
+        },
+        "student_params": 2084,
+        "student_int4_bytes": 1312
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 741,
+          "val": 732,
+          "test": 732,
+          "n_features": 60,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.4968,
+          "std": 0.0116,
+          "min": 0.4809,
+          "max": 0.5082
+        },
+        "student_ce_fp32": {
+          "mean": 0.5082,
+          "std": 0.0,
+          "min": 0.5082,
+          "max": 0.5082
+        },
+        "student_kl_fp32": {
+          "mean": 0.5082,
+          "std": 0.0,
+          "min": 0.5082,
+          "max": 0.5082
+        },
+        "student_int8_w8a8": {
+          "mean": 0.5082,
+          "std": 0.0,
+          "min": 0.5082,
+          "max": 0.5082
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.5082,
+          "std": 0.0,
+          "min": 0.5082,
+          "max": 0.5082
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.5082,
+          "std": 0.0,
+          "min": 0.5082,
+          "max": 0.5082
+        }
+      }
+    },
+    "sers_bacteria_raman_2026": {
+      "dataset_id": "sers_bacteria_raman_2026",
+      "spdx_license": "MIT",
+      "modality": "raman_spectroscopy",
+      "n_samples": 117,
+      "n_features": 1215,
+      "n_classes": 9,
+      "archive_bytes": 1715921,
+      "raw_sha256": "dececbe28856c271263a17d89fbc28b229194e3676e5ca28383c279ede4ee6e7",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 69,
+          "val": 18,
+          "test": 30,
+          "n_features": 1215,
+          "n_classes": 9
+        },
+        "teacher_fp32": {
+          "mean": 0.9111,
+          "std": 0.0416,
+          "min": 0.8667,
+          "max": 0.9667
+        },
+        "student_ce_fp32": {
+          "mean": 0.8889,
+          "std": 0.0567,
+          "min": 0.8333,
+          "max": 0.9667
+        },
+        "student_kl_fp32": {
+          "mean": 0.8778,
+          "std": 0.0157,
+          "min": 0.8667,
+          "max": 0.9
+        },
+        "student_int8_w8a8": {
+          "mean": 0.8778,
+          "std": 0.0314,
+          "min": 0.8333,
+          "max": 0.9
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.8889,
+          "std": 0.0157,
+          "min": 0.8667,
+          "max": 0.9
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.8778,
+          "std": 0.0416,
+          "min": 0.8333,
+          "max": 0.9333
+        },
+        "student_params": 39209,
+        "student_int4_bytes": 19912,
+        "spectral_resnet1d": {
+          "params": 39033,
+          "fp32_bytes": 156132,
+          "packed_4bit_bytes": 21744,
+          "fp32_test_acc": {
+            "mean": 0.7556,
+            "std": 0.0628,
+            "min": 0.6667,
+            "max": 0.8
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.7444,
+            "std": 0.0685,
+            "min": 0.6667,
+            "max": 0.8333
+          }
+        }
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 45,
+          "val": 36,
+          "test": 36,
+          "n_features": 1215,
+          "n_classes": 9
+        },
+        "teacher_fp32": {
+          "mean": 0.4167,
+          "std": 0.0,
+          "min": 0.4167,
+          "max": 0.4167
+        },
+        "student_ce_fp32": {
+          "mean": 0.4259,
+          "std": 0.0131,
+          "min": 0.4167,
+          "max": 0.4444
+        },
+        "student_kl_fp32": {
+          "mean": 0.3796,
+          "std": 0.0472,
+          "min": 0.3333,
+          "max": 0.4444
+        },
+        "student_int8_w8a8": {
+          "mean": 0.4167,
+          "std": 0.0227,
+          "min": 0.3889,
+          "max": 0.4444
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.3889,
+          "std": 0.06,
+          "min": 0.3333,
+          "max": 0.4722
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.3704,
+          "std": 0.057,
+          "min": 0.3056,
+          "max": 0.4444
+        }
+      }
+    },
+    "ethanol_nir_spectroscopy": {
+      "dataset_id": "ethanol_nir_spectroscopy",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "nir_spectroscopy",
+      "n_samples": 1004,
+      "n_features": 1751,
+      "n_classes": 4,
+      "archive_bytes": 24066825,
+      "raw_sha256": "1b0d4614fff10a998bf3abf40aaa915cfe62e97cfb7a7a67e9b24c35fa0f673c",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 403,
+          "val": 101,
+          "test": 500,
+          "n_features": 1751,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.4827,
+          "std": 0.0391,
+          "min": 0.452,
+          "max": 0.5378
+        },
+        "student_ce_fp32": {
+          "mean": 0.7738,
+          "std": 0.0955,
+          "min": 0.64,
+          "max": 0.8566
+        },
+        "student_kl_fp32": {
+          "mean": 0.5584,
+          "std": 0.0548,
+          "min": 0.496,
+          "max": 0.6295
+        },
+        "student_int8_w8a8": {
+          "mean": 0.5578,
+          "std": 0.0553,
+          "min": 0.49,
+          "max": 0.6255
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.5418,
+          "std": 0.044,
+          "min": 0.486,
+          "max": 0.5936
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.5558,
+          "std": 0.0631,
+          "min": 0.484,
+          "max": 0.6375
+        },
+        "student_params": 56196,
+        "student_int4_bytes": 28368,
+        "spectral_resnet1d": {
+          "params": 38788,
+          "fp32_bytes": 155152,
+          "packed_4bit_bytes": 21584,
+          "fp32_test_acc": {
+            "mean": 0.4129,
+            "std": 0.0124,
+            "min": 0.402,
+            "max": 0.4303
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.4116,
+            "std": 0.0132,
+            "min": 0.402,
+            "max": 0.4303
+          }
+        }
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 403,
+          "val": 101,
+          "test": 500,
+          "n_features": 1751,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.4393,
+          "std": 0.0208,
+          "min": 0.41,
+          "max": 0.456
+        },
+        "student_ce_fp32": {
+          "mean": 0.6247,
+          "std": 0.0131,
+          "min": 0.608,
+          "max": 0.64
+        },
+        "student_kl_fp32": {
+          "mean": 0.4873,
+          "std": 0.0389,
+          "min": 0.436,
+          "max": 0.53
+        },
+        "student_int8_w8a8": {
+          "mean": 0.4907,
+          "std": 0.0335,
+          "min": 0.45,
+          "max": 0.532
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.4793,
+          "std": 0.0282,
+          "min": 0.442,
+          "max": 0.51
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.488,
+          "std": 0.036,
+          "min": 0.446,
+          "max": 0.534
+        }
+      }
+    },
+    "olive_oil_ftir": {
+      "dataset_id": "olive_oil_ftir",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "ftir_spectroscopy",
+      "n_samples": 60,
+      "n_features": 570,
+      "n_classes": 4,
+      "archive_bytes": 520986,
+      "raw_sha256": "eb25894f92858611b641c77f3ce8e1cfca6312dd3945d07b96c392e5dc6b24c6",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 24,
+          "val": 6,
+          "test": 30,
+          "n_features": 570,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.9333,
+          "std": 0.0,
+          "min": 0.9333,
+          "max": 0.9333
+        },
+        "student_ce_fp32": {
+          "mean": 0.8556,
+          "std": 0.0416,
+          "min": 0.8,
+          "max": 0.9
+        },
+        "student_kl_fp32": {
+          "mean": 0.8667,
+          "std": 0.0544,
+          "min": 0.8,
+          "max": 0.9333
+        },
+        "student_int8_w8a8": {
+          "mean": 0.8667,
+          "std": 0.0544,
+          "min": 0.8,
+          "max": 0.9333
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.8667,
+          "std": 0.0544,
+          "min": 0.8,
+          "max": 0.9333
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.8667,
+          "std": 0.0544,
+          "min": 0.8,
+          "max": 0.9333
+        },
+        "student_params": 18404,
+        "student_int4_bytes": 9472,
+        "spectral_resnet1d": {
+          "params": 38788,
+          "fp32_bytes": 155152,
+          "packed_4bit_bytes": 21584,
+          "fp32_test_acc": {
+            "mean": 0.8111,
+            "std": 0.11,
+            "min": 0.6667,
+            "max": 0.9333
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.8,
+            "std": 0.1088,
+            "min": 0.6667,
+            "max": 0.9333
+          }
+        }
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 24,
+          "val": 6,
+          "test": 30,
+          "n_features": 570,
+          "n_classes": 4
+        },
+        "teacher_fp32": {
+          "mean": 0.8889,
+          "std": 0.0314,
+          "min": 0.8667,
+          "max": 0.9333
+        },
+        "student_ce_fp32": {
+          "mean": 0.8667,
+          "std": 0.0272,
+          "min": 0.8333,
+          "max": 0.9
+        },
+        "student_kl_fp32": {
+          "mean": 0.8889,
+          "std": 0.0416,
+          "min": 0.8333,
+          "max": 0.9333
+        },
+        "student_int8_w8a8": {
+          "mean": 0.8889,
+          "std": 0.0416,
+          "min": 0.8333,
+          "max": 0.9333
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.8889,
+          "std": 0.0416,
+          "min": 0.8333,
+          "max": 0.9333
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.8889,
+          "std": 0.0416,
+          "min": 0.8333,
+          "max": 0.9333
+        }
+      }
+    },
+    "coffee_ftir": {
+      "dataset_id": "coffee_ftir",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "ftir_spectroscopy",
+      "n_samples": 56,
+      "n_features": 286,
+      "n_classes": 2,
+      "archive_bytes": 246676,
+      "raw_sha256": "bfba9d67f4a0f2041cb8ba88b60b11f10dab60b670e40b904ac47bd7dfdf4749",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 22,
+          "val": 6,
+          "test": 28,
+          "n_features": 286,
+          "n_classes": 2
+        },
+        "teacher_fp32": {
+          "mean": 0.9405,
+          "std": 0.0168,
+          "min": 0.9286,
+          "max": 0.9643
+        },
+        "student_ce_fp32": {
+          "mean": 0.9405,
+          "std": 0.0168,
+          "min": 0.9286,
+          "max": 0.9643
+        },
+        "student_kl_fp32": {
+          "mean": 0.9762,
+          "std": 0.0337,
+          "min": 0.9286,
+          "max": 1.0
+        },
+        "student_int8_w8a8": {
+          "mean": 0.9762,
+          "std": 0.0337,
+          "min": 0.9286,
+          "max": 1.0
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9762,
+          "std": 0.0337,
+          "min": 0.9286,
+          "max": 1.0
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9762,
+          "std": 0.0337,
+          "min": 0.9286,
+          "max": 1.0
+        },
+        "student_params": 9250,
+        "student_int4_bytes": 4880,
+        "spectral_resnet1d": {
+          "params": 38690,
+          "fp32_bytes": 154760,
+          "packed_4bit_bytes": 21520,
+          "fp32_test_acc": {
+            "mean": 0.7381,
+            "std": 0.1468,
+            "min": 0.5714,
+            "max": 0.9286
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.7262,
+            "std": 0.1606,
+            "min": 0.5357,
+            "max": 0.9286
+          }
+        }
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 22,
+          "val": 6,
+          "test": 28,
+          "n_features": 286,
+          "n_classes": 2
+        },
+        "teacher_fp32": {
+          "mean": 0.9643,
+          "std": 0.0,
+          "min": 0.9643,
+          "max": 0.9643
+        },
+        "student_ce_fp32": {
+          "mean": 0.9643,
+          "std": 0.0,
+          "min": 0.9643,
+          "max": 0.9643
+        },
+        "student_kl_fp32": {
+          "mean": 0.9762,
+          "std": 0.0168,
+          "min": 0.9643,
+          "max": 1.0
+        },
+        "student_int8_w8a8": {
+          "mean": 0.9643,
+          "std": 0.0291,
+          "min": 0.9286,
+          "max": 1.0
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9762,
+          "std": 0.0168,
+          "min": 0.9643,
+          "max": 1.0
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9643,
+          "std": 0.0291,
+          "min": 0.9286,
+          "max": 1.0
+        }
+      }
+    },
+    "meat_ftir": {
+      "dataset_id": "meat_ftir",
+      "spdx_license": "CC-BY-4.0",
+      "modality": "ftir_spectroscopy",
+      "n_samples": 120,
+      "n_features": 448,
+      "n_classes": 3,
+      "archive_bytes": 789828,
+      "raw_sha256": "2a45c20ef4c226a10e18ad36581d7d5cbe9ba12e9b67e6d9d3b091c21a012202",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "random_split": {
+        "splits": {
+          "train": 48,
+          "val": 12,
+          "test": 60,
+          "n_features": 448,
+          "n_classes": 3
+        },
+        "teacher_fp32": {
+          "mean": 0.9667,
+          "std": 0.0471,
+          "min": 0.9,
+          "max": 1.0
+        },
+        "student_ce_fp32": {
+          "mean": 0.9556,
+          "std": 0.0628,
+          "min": 0.8667,
+          "max": 1.0
+        },
+        "student_kl_fp32": {
+          "mean": 0.9667,
+          "std": 0.0471,
+          "min": 0.9,
+          "max": 1.0
+        },
+        "student_int8_w8a8": {
+          "mean": 0.9722,
+          "std": 0.0393,
+          "min": 0.9167,
+          "max": 1.0
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9667,
+          "std": 0.0471,
+          "min": 0.9,
+          "max": 1.0
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9722,
+          "std": 0.0393,
+          "min": 0.9167,
+          "max": 1.0
+        },
+        "student_params": 14467,
+        "student_int4_bytes": 7496,
+        "spectral_resnet1d": {
+          "params": 38739,
+          "fp32_bytes": 154956,
+          "packed_4bit_bytes": 21552,
+          "fp32_test_acc": {
+            "mean": 0.9,
+            "std": 0.0981,
+            "min": 0.7667,
+            "max": 1.0
+          },
+          "wht_gptq_w4a8_test_acc": {
+            "mean": 0.8944,
+            "std": 0.1057,
+            "min": 0.75,
+            "max": 1.0
+          }
+        }
+      },
+      "temporal_split": {
+        "splits": {
+          "train": 48,
+          "val": 12,
+          "test": 60,
+          "n_features": 448,
+          "n_classes": 3
+        },
+        "teacher_fp32": {
+          "mean": 0.9167,
+          "std": 0.0236,
+          "min": 0.9,
+          "max": 0.95
+        },
+        "student_ce_fp32": {
+          "mean": 0.8722,
+          "std": 0.0208,
+          "min": 0.85,
+          "max": 0.9
+        },
+        "student_kl_fp32": {
+          "mean": 0.9167,
+          "std": 0.0136,
+          "min": 0.9,
+          "max": 0.9333
+        },
+        "student_int8_w8a8": {
+          "mean": 0.9278,
+          "std": 0.0078,
+          "min": 0.9167,
+          "max": 0.9333
+        },
+        "student_int4_pc_mse_w4a8": {
+          "mean": 0.9222,
+          "std": 0.0157,
+          "min": 0.9,
+          "max": 0.9333
+        },
+        "student_int4_wht_gptq_w4a8": {
+          "mean": 0.9278,
+          "std": 0.0078,
+          "min": 0.9167,
+          "max": 0.9333
+        }
+      }
+    }
+  },
+  "uci_gas_sensor_drift_abstention": {
+    "full_128d_948B": {
+      "dataset_id": "uci_gas_sensor_drift",
+      "spdx_license": "CC-BY-4.0",
+      "source_batches": [
+        1
+      ],
+      "evaluated_drift_batches": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "n_selected_features": 128,
+      "packed_weight_bytes": 2372,
+      "extra_sram_bytes": 948,
+      "sram_budget_exceeded": true,
+      "sram_warning": "OOD monitor tables occupy 948 B (> 512 B MCU SRAM target) for n_features=128, n_classes=6; use max_monitor_features<=32 (276 B @ 6 classes) or <=24 (220 B @ 6 classes) when targeting < 512 B.",
+      "calibration_abstain_rates_pct": {
+        "five_gate_safe_hold": 4.4944,
+        "msp_baseline": 4.4944,
+        "energy_baseline": 4.4944,
+        "react_energy": 4.4944,
+        "shrinkage_mahalanobis": 4.4944,
+        "ttn_crc_frontier": 3.3708
+      },
+      "normalizer": {
+        "kind": "signed_log1p_zscore",
+        "state_sha256": "e2c926329c8623cb69ab08338ceb509a336664a8d8bd29978c04a988d766542a"
+      },
+      "source_in_domain": {
+        "batch_tag": "source_in_domain_holdout",
+        "batch_id": 1,
+        "n_samples": 89,
+        "naive_int4_accuracy_pct": 94.382,
+        "naive_silent_error_rate_pct": 5.618,
+        "guarded_accepted_accuracy_pct": 96.5517,
+        "guarded_safe_hold_rate_pct": 2.2472,
+        "guarded_silent_error_rate_pct": 3.3708,
+        "msp_baseline": {
+          "safe_hold_rate_pct": 1.1236,
+          "accepted_accuracy_pct": 95.4545,
+          "silent_error_rate_pct": 4.4944,
+          "aurc": 0.0052
+        },
+        "energy_baseline": {
+          "safe_hold_rate_pct": 4.4944,
+          "accepted_accuracy_pct": 96.4706,
+          "silent_error_rate_pct": 3.3708,
+          "aurc": 0.009
+        },
+        "react_energy": {
+          "safe_hold_rate_pct": 4.4944,
+          "accepted_accuracy_pct": 96.4706,
+          "silent_error_rate_pct": 3.3708,
+          "aurc": 0.009
+        },
+        "shrinkage_mahalanobis": {
+          "safe_hold_rate_pct": 3.3708,
+          "accepted_accuracy_pct": 96.5116,
+          "silent_error_rate_pct": 3.3708,
+          "aurc": 0.0668
+        },
+        "ttn_crc_frontier": {
+          "safe_hold_rate_pct": 1.1236,
+          "accepted_accuracy_pct": 95.4545,
+          "silent_error_rate_pct": 4.4944,
+          "aurc": 0.0042,
+          "ttn_naive_accuracy_pct": 95.5056
+        },
+        "mean_l1_mahalanobis_score": 13585.48,
+        "mean_int4_clips": 0.876,
+        "mean_int8_input_clips": 0.596
+      },
+      "drift_batches": [
+        {
+          "batch_tag": "batch_2",
+          "batch_id": 2,
+          "n_samples": 1244,
+          "naive_int4_accuracy_pct": 87.6206,
+          "naive_silent_error_rate_pct": 12.3794,
+          "guarded_accepted_accuracy_pct": 88.1818,
+          "guarded_safe_hold_rate_pct": 2.7331,
+          "guarded_silent_error_rate_pct": 11.4952,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 1.3666,
+            "accepted_accuracy_pct": 88.4271,
+            "silent_error_rate_pct": 11.4148,
+            "aurc": 0.0615
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 87.6206,
+            "silent_error_rate_pct": 12.3794,
+            "aurc": 0.0477
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 87.6206,
+            "silent_error_rate_pct": 12.3794,
+            "aurc": 0.0477
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 3.8585,
+            "accepted_accuracy_pct": 88.1271,
+            "silent_error_rate_pct": 11.4148,
+            "aurc": 0.1021
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 2.0096,
+            "accepted_accuracy_pct": 84.9057,
+            "silent_error_rate_pct": 14.791,
+            "aurc": 0.0338,
+            "ttn_naive_accuracy_pct": 83.4405
+          },
+          "mean_l1_mahalanobis_score": 17288.09,
+          "mean_int4_clips": 1.273,
+          "mean_int8_input_clips": 0.429
+        },
+        {
+          "batch_tag": "batch_3",
+          "batch_id": 3,
+          "n_samples": 1586,
+          "naive_int4_accuracy_pct": 83.5435,
+          "naive_silent_error_rate_pct": 16.4565,
+          "guarded_accepted_accuracy_pct": 83.1911,
+          "guarded_safe_hold_rate_pct": 3.9723,
+          "guarded_silent_error_rate_pct": 16.1412,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 0.3153,
+            "accepted_accuracy_pct": 83.5547,
+            "silent_error_rate_pct": 16.3934,
+            "aurc": 0.0669
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.1261,
+            "accepted_accuracy_pct": 83.649,
+            "silent_error_rate_pct": 16.3304,
+            "aurc": 0.0478
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.1261,
+            "accepted_accuracy_pct": 83.649,
+            "silent_error_rate_pct": 16.3304,
+            "aurc": 0.0478
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 17.7175,
+            "accepted_accuracy_pct": 80.4598,
+            "silent_error_rate_pct": 16.0782,
+            "aurc": 0.2719
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 5.4224,
+            "accepted_accuracy_pct": 82.8667,
+            "silent_error_rate_pct": 16.2043,
+            "aurc": 0.0418,
+            "ttn_naive_accuracy_pct": 80.3279
+          },
+          "mean_l1_mahalanobis_score": 18911.73,
+          "mean_int4_clips": 2.024,
+          "mean_int8_input_clips": 0.964
+        },
+        {
+          "batch_tag": "batch_4",
+          "batch_id": 4,
+          "n_samples": 161,
+          "naive_int4_accuracy_pct": 69.5652,
+          "naive_silent_error_rate_pct": 30.4348,
+          "guarded_accepted_accuracy_pct": 73.6842,
+          "guarded_safe_hold_rate_pct": 29.1925,
+          "guarded_silent_error_rate_pct": 18.6335,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 18.6335,
+            "accepted_accuracy_pct": 77.8626,
+            "silent_error_rate_pct": 18.0124,
+            "aurc": 0.1186
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 69.5652,
+            "silent_error_rate_pct": 30.4348,
+            "aurc": 0.1099
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 69.5652,
+            "silent_error_rate_pct": 30.4348,
+            "aurc": 0.1099
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 44.0994,
+            "accepted_accuracy_pct": 68.8889,
+            "silent_error_rate_pct": 17.3913,
+            "aurc": 0.298
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 18.0124,
+            "accepted_accuracy_pct": 80.303,
+            "silent_error_rate_pct": 16.1491,
+            "aurc": 0.0651,
+            "ttn_naive_accuracy_pct": 70.8075
+          },
+          "mean_l1_mahalanobis_score": 23550.43,
+          "mean_int4_clips": 2.46,
+          "mean_int8_input_clips": 4.957
+        },
+        {
+          "batch_tag": "batch_5",
+          "batch_id": 5,
+          "n_samples": 197,
+          "naive_int4_accuracy_pct": 45.6853,
+          "naive_silent_error_rate_pct": 54.3147,
+          "guarded_accepted_accuracy_pct": 38.3721,
+          "guarded_safe_hold_rate_pct": 12.6904,
+          "guarded_silent_error_rate_pct": 53.8071,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 3.0457,
+            "accepted_accuracy_pct": 46.0733,
+            "silent_error_rate_pct": 52.2843,
+            "aurc": 0.2773
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 45.6853,
+            "silent_error_rate_pct": 54.3147,
+            "aurc": 0.2679
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 45.6853,
+            "silent_error_rate_pct": 54.3147,
+            "aurc": 0.2679
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 18.7817,
+            "accepted_accuracy_pct": 33.75,
+            "silent_error_rate_pct": 53.8071,
+            "aurc": 0.4418
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 10.1523,
+            "accepted_accuracy_pct": 72.8814,
+            "silent_error_rate_pct": 24.3655,
+            "aurc": 0.0797,
+            "ttn_naive_accuracy_pct": 66.4975
+          },
+          "mean_l1_mahalanobis_score": 20805.04,
+          "mean_int4_clips": 2.548,
+          "mean_int8_input_clips": 1.178
+        },
+        {
+          "batch_tag": "batch_6",
+          "batch_id": 6,
+          "n_samples": 2300,
+          "naive_int4_accuracy_pct": 50.9565,
+          "naive_silent_error_rate_pct": 49.0435,
+          "guarded_accepted_accuracy_pct": 50.6837,
+          "guarded_safe_hold_rate_pct": 1.4348,
+          "guarded_silent_error_rate_pct": 48.6087,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 14.3913,
+            "accepted_accuracy_pct": 56.5262,
+            "silent_error_rate_pct": 37.2174,
+            "aurc": 0.2143
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 7.8261,
+            "accepted_accuracy_pct": 55.2358,
+            "silent_error_rate_pct": 41.2609,
+            "aurc": 0.1875
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 7.8261,
+            "accepted_accuracy_pct": 55.2358,
+            "silent_error_rate_pct": 41.2609,
+            "aurc": 0.1875
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 3.2174,
+            "accepted_accuracy_pct": 49.5058,
+            "silent_error_rate_pct": 48.8696,
+            "aurc": 0.6655
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 2.6522,
+            "accepted_accuracy_pct": 88.075,
+            "silent_error_rate_pct": 11.6087,
+            "aurc": 0.0286,
+            "ttn_naive_accuracy_pct": 86.7391
+          },
+          "mean_l1_mahalanobis_score": 15994.16,
+          "mean_int4_clips": 0.847,
+          "mean_int8_input_clips": 0.192
+        },
+        {
+          "batch_tag": "batch_7",
+          "batch_id": 7,
+          "n_samples": 3613,
+          "naive_int4_accuracy_pct": 43.3988,
+          "naive_silent_error_rate_pct": 56.6012,
+          "guarded_accepted_accuracy_pct": 45.3671,
+          "guarded_safe_hold_rate_pct": 5.0097,
+          "guarded_silent_error_rate_pct": 51.8959,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 25.9341,
+            "accepted_accuracy_pct": 56.2033,
+            "silent_error_rate_pct": 32.4384,
+            "aurc": 0.2562
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 1.8267,
+            "accepted_accuracy_pct": 44.0654,
+            "silent_error_rate_pct": 54.9128,
+            "aurc": 0.2464
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 1.8267,
+            "accepted_accuracy_pct": 44.0654,
+            "silent_error_rate_pct": 54.9128,
+            "aurc": 0.2464
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 10.7944,
+            "accepted_accuracy_pct": 38.8148,
+            "silent_error_rate_pct": 54.5807,
+            "aurc": 0.6624
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 10.9327,
+            "accepted_accuracy_pct": 67.775,
+            "silent_error_rate_pct": 28.7019,
+            "aurc": 0.1663,
+            "ttn_naive_accuracy_pct": 62.3858
+          },
+          "mean_l1_mahalanobis_score": 18032.05,
+          "mean_int4_clips": 0.792,
+          "mean_int8_input_clips": 0.374
+        },
+        {
+          "batch_tag": "batch_8",
+          "batch_id": 8,
+          "n_samples": 294,
+          "naive_int4_accuracy_pct": 24.4898,
+          "naive_silent_error_rate_pct": 75.5102,
+          "guarded_accepted_accuracy_pct": 27.3438,
+          "guarded_safe_hold_rate_pct": 12.9252,
+          "guarded_silent_error_rate_pct": 63.2653,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 53.7415,
+            "accepted_accuracy_pct": 44.8529,
+            "silent_error_rate_pct": 25.5102,
+            "aurc": 0.4949
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 4.7619,
+            "accepted_accuracy_pct": 25.7143,
+            "silent_error_rate_pct": 70.7483,
+            "aurc": 0.4849
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 4.7619,
+            "accepted_accuracy_pct": 25.7143,
+            "silent_error_rate_pct": 70.7483,
+            "aurc": 0.4849
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 1.0204,
+            "accepted_accuracy_pct": 24.7423,
+            "silent_error_rate_pct": 74.4898,
+            "aurc": 0.825
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 17.0068,
+            "accepted_accuracy_pct": 66.8033,
+            "silent_error_rate_pct": 27.551,
+            "aurc": 0.1466,
+            "ttn_naive_accuracy_pct": 56.8027
+          },
+          "mean_l1_mahalanobis_score": 16862.95,
+          "mean_int4_clips": 0.153,
+          "mean_int8_input_clips": 0.395
+        },
+        {
+          "batch_tag": "batch_9",
+          "batch_id": 9,
+          "n_samples": 470,
+          "naive_int4_accuracy_pct": 46.8085,
+          "naive_silent_error_rate_pct": 53.1915,
+          "guarded_accepted_accuracy_pct": 48.3444,
+          "guarded_safe_hold_rate_pct": 3.617,
+          "guarded_silent_error_rate_pct": 49.7872,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 42.9787,
+            "accepted_accuracy_pct": 79.1045,
+            "silent_error_rate_pct": 11.9149,
+            "aurc": 0.2218
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 2.1277,
+            "accepted_accuracy_pct": 47.8261,
+            "silent_error_rate_pct": 51.0638,
+            "aurc": 0.2362
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 2.1277,
+            "accepted_accuracy_pct": 47.8261,
+            "silent_error_rate_pct": 51.0638,
+            "aurc": 0.2362
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 0.2128,
+            "accepted_accuracy_pct": 46.9083,
+            "silent_error_rate_pct": 52.9787,
+            "aurc": 0.6786
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 15.5319,
+            "accepted_accuracy_pct": 65.995,
+            "silent_error_rate_pct": 28.7234,
+            "aurc": 0.1888,
+            "ttn_naive_accuracy_pct": 56.8085
+          },
+          "mean_l1_mahalanobis_score": 15427.76,
+          "mean_int4_clips": 0.166,
+          "mean_int8_input_clips": 0.034
+        },
+        {
+          "batch_tag": "batch_10",
+          "batch_id": 10,
+          "n_samples": 3600,
+          "naive_int4_accuracy_pct": 48.7778,
+          "naive_silent_error_rate_pct": 51.2222,
+          "guarded_accepted_accuracy_pct": 49.3494,
+          "guarded_safe_hold_rate_pct": 14.6111,
+          "guarded_silent_error_rate_pct": 43.25,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 9.3056,
+            "accepted_accuracy_pct": 50.4747,
+            "silent_error_rate_pct": 44.9167,
+            "aurc": 0.3665
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.7222,
+            "accepted_accuracy_pct": 48.9368,
+            "silent_error_rate_pct": 50.6944,
+            "aurc": 0.3234
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.7222,
+            "accepted_accuracy_pct": 48.9368,
+            "silent_error_rate_pct": 50.6944,
+            "aurc": 0.3234
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 20.2222,
+            "accepted_accuracy_pct": 48.9554,
+            "silent_error_rate_pct": 40.7222,
+            "aurc": 0.4884
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 14.25,
+            "accepted_accuracy_pct": 46.3557,
+            "silent_error_rate_pct": 46.0,
+            "aurc": 0.4792,
+            "ttn_naive_accuracy_pct": 42.3333
+          },
+          "mean_l1_mahalanobis_score": 19913.33,
+          "mean_int4_clips": 1.094,
+          "mean_int8_input_clips": 1.874
+        }
+      ]
+    },
+    "mcu_32d_276B": {
+      "dataset_id": "uci_gas_sensor_drift",
+      "spdx_license": "CC-BY-4.0",
+      "source_batches": [
+        1
+      ],
+      "evaluated_drift_batches": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "n_selected_features": 32,
+      "packed_weight_bytes": 636,
+      "extra_sram_bytes": 276,
+      "sram_budget_exceeded": false,
+      "sram_warning": null,
+      "calibration_abstain_rates_pct": {
+        "five_gate_safe_hold": 3.3708,
+        "msp_baseline": 3.3708,
+        "energy_baseline": 3.3708,
+        "react_energy": 3.3708,
+        "shrinkage_mahalanobis": 3.3708,
+        "ttn_crc_frontier": 3.3708
+      },
+      "normalizer": {
+        "kind": "signed_log1p_zscore",
+        "state_sha256": "e2c926329c8623cb69ab08338ceb509a336664a8d8bd29978c04a988d766542a"
+      },
+      "source_in_domain": {
+        "batch_tag": "source_in_domain_holdout",
+        "batch_id": 1,
+        "n_samples": 89,
+        "naive_int4_accuracy_pct": 69.6629,
+        "naive_silent_error_rate_pct": 30.3371,
+        "guarded_accepted_accuracy_pct": 72.2892,
+        "guarded_safe_hold_rate_pct": 6.7416,
+        "guarded_silent_error_rate_pct": 25.8427,
+        "msp_baseline": {
+          "safe_hold_rate_pct": 3.3708,
+          "accepted_accuracy_pct": 69.7674,
+          "silent_error_rate_pct": 29.2135,
+          "aurc": 0.1838
+        },
+        "energy_baseline": {
+          "safe_hold_rate_pct": 2.2472,
+          "accepted_accuracy_pct": 68.9655,
+          "silent_error_rate_pct": 30.3371,
+          "aurc": 0.2592
+        },
+        "react_energy": {
+          "safe_hold_rate_pct": 2.2472,
+          "accepted_accuracy_pct": 68.9655,
+          "silent_error_rate_pct": 30.3371,
+          "aurc": 0.2592
+        },
+        "shrinkage_mahalanobis": {
+          "safe_hold_rate_pct": 5.618,
+          "accepted_accuracy_pct": 72.619,
+          "silent_error_rate_pct": 25.8427,
+          "aurc": 0.1819
+        },
+        "ttn_crc_frontier": {
+          "safe_hold_rate_pct": 7.8652,
+          "accepted_accuracy_pct": 69.5122,
+          "silent_error_rate_pct": 28.0899,
+          "aurc": 0.215,
+          "ttn_naive_accuracy_pct": 67.4157
+        },
+        "mean_l1_mahalanobis_score": 1880.67,
+        "mean_int4_clips": 1.09,
+        "mean_int8_input_clips": 0.135
+      },
+      "drift_batches": [
+        {
+          "batch_tag": "batch_2",
+          "batch_id": 2,
+          "n_samples": 1244,
+          "naive_int4_accuracy_pct": 67.283,
+          "naive_silent_error_rate_pct": 32.717,
+          "guarded_accepted_accuracy_pct": 67.8778,
+          "guarded_safe_hold_rate_pct": 2.6527,
+          "guarded_silent_error_rate_pct": 31.2701,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 1.9293,
+            "accepted_accuracy_pct": 68.3607,
+            "silent_error_rate_pct": 31.0289,
+            "aurc": 0.1251
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 1.1254,
+            "accepted_accuracy_pct": 67.8862,
+            "silent_error_rate_pct": 31.7524,
+            "aurc": 0.2963
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 1.1254,
+            "accepted_accuracy_pct": 67.8862,
+            "silent_error_rate_pct": 31.7524,
+            "aurc": 0.2963
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 7.717,
+            "accepted_accuracy_pct": 70.3833,
+            "silent_error_rate_pct": 27.3312,
+            "aurc": 0.3693
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 2.2508,
+            "accepted_accuracy_pct": 69.7368,
+            "silent_error_rate_pct": 29.582,
+            "aurc": 0.2826,
+            "ttn_naive_accuracy_pct": 68.4887
+          },
+          "mean_l1_mahalanobis_score": 2098.8,
+          "mean_int4_clips": 1.106,
+          "mean_int8_input_clips": 0.062
+        },
+        {
+          "batch_tag": "batch_3",
+          "batch_id": 3,
+          "n_samples": 1586,
+          "naive_int4_accuracy_pct": 45.9016,
+          "naive_silent_error_rate_pct": 54.0984,
+          "guarded_accepted_accuracy_pct": 48.5811,
+          "guarded_safe_hold_rate_pct": 6.6835,
+          "guarded_silent_error_rate_pct": 47.9823,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 4.3506,
+            "accepted_accuracy_pct": 45.7482,
+            "silent_error_rate_pct": 51.8916,
+            "aurc": 0.4789
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 1.3241,
+            "accepted_accuracy_pct": 46.4537,
+            "silent_error_rate_pct": 52.8373,
+            "aurc": 0.4147
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 1.3241,
+            "accepted_accuracy_pct": 46.4537,
+            "silent_error_rate_pct": 52.8373,
+            "aurc": 0.4147
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 46.7213,
+            "accepted_accuracy_pct": 58.1065,
+            "silent_error_rate_pct": 22.3203,
+            "aurc": 0.5316
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 12.3581,
+            "accepted_accuracy_pct": 61.295,
+            "silent_error_rate_pct": 33.9218,
+            "aurc": 0.1807,
+            "ttn_naive_accuracy_pct": 54.6028
+          },
+          "mean_l1_mahalanobis_score": 2644.25,
+          "mean_int4_clips": 1.477,
+          "mean_int8_input_clips": 0.172
+        },
+        {
+          "batch_tag": "batch_4",
+          "batch_id": 4,
+          "n_samples": 161,
+          "naive_int4_accuracy_pct": 29.8137,
+          "naive_silent_error_rate_pct": 70.1863,
+          "guarded_accepted_accuracy_pct": 32.4138,
+          "guarded_safe_hold_rate_pct": 9.9379,
+          "guarded_silent_error_rate_pct": 60.8696,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 29.8137,
+            "silent_error_rate_pct": 70.1863,
+            "aurc": 0.8662
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 29.8137,
+            "silent_error_rate_pct": 70.1863,
+            "aurc": 0.5089
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 29.8137,
+            "silent_error_rate_pct": 70.1863,
+            "aurc": 0.5089
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 70.1863,
+            "accepted_accuracy_pct": 35.4167,
+            "silent_error_rate_pct": 19.2547,
+            "aurc": 0.6177
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 41.6149,
+            "silent_error_rate_pct": 58.3851,
+            "aurc": 0.5745,
+            "ttn_naive_accuracy_pct": 41.6149
+          },
+          "mean_l1_mahalanobis_score": 3400.07,
+          "mean_int4_clips": 1.391,
+          "mean_int8_input_clips": 0.41
+        },
+        {
+          "batch_tag": "batch_5",
+          "batch_id": 5,
+          "n_samples": 197,
+          "naive_int4_accuracy_pct": 49.7462,
+          "naive_silent_error_rate_pct": 50.2538,
+          "guarded_accepted_accuracy_pct": 50.5155,
+          "guarded_safe_hold_rate_pct": 1.5228,
+          "guarded_silent_error_rate_pct": 48.731,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 49.7462,
+            "silent_error_rate_pct": 50.2538,
+            "aurc": 0.7604
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 49.7462,
+            "silent_error_rate_pct": 50.2538,
+            "aurc": 0.4457
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 49.7462,
+            "silent_error_rate_pct": 50.2538,
+            "aurc": 0.4457
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 50.7614,
+            "accepted_accuracy_pct": 58.7629,
+            "silent_error_rate_pct": 20.3046,
+            "aurc": 0.3858
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 0.5076,
+            "accepted_accuracy_pct": 41.8367,
+            "silent_error_rate_pct": 57.868,
+            "aurc": 0.2966,
+            "ttn_naive_accuracy_pct": 41.6244
+          },
+          "mean_l1_mahalanobis_score": 2510.66,
+          "mean_int4_clips": 1.213,
+          "mean_int8_input_clips": 0.117
+        },
+        {
+          "batch_tag": "batch_6",
+          "batch_id": 6,
+          "n_samples": 2300,
+          "naive_int4_accuracy_pct": 50.6522,
+          "naive_silent_error_rate_pct": 49.3478,
+          "guarded_accepted_accuracy_pct": 51.6419,
+          "guarded_safe_hold_rate_pct": 3.3478,
+          "guarded_silent_error_rate_pct": 46.7391,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 5.3478,
+            "accepted_accuracy_pct": 51.1254,
+            "silent_error_rate_pct": 46.2609,
+            "aurc": 0.4629
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 25.2174,
+            "accepted_accuracy_pct": 52.7907,
+            "silent_error_rate_pct": 35.3043,
+            "aurc": 0.3364
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 25.2174,
+            "accepted_accuracy_pct": 52.7907,
+            "silent_error_rate_pct": 35.3043,
+            "aurc": 0.3364
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 48.7826,
+            "accepted_accuracy_pct": 34.2954,
+            "silent_error_rate_pct": 33.6522,
+            "aurc": 0.7265
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 6.4348,
+            "accepted_accuracy_pct": 57.0167,
+            "silent_error_rate_pct": 40.2174,
+            "aurc": 0.3131,
+            "ttn_naive_accuracy_pct": 56.3913
+          },
+          "mean_l1_mahalanobis_score": 3455.58,
+          "mean_int4_clips": 0.712,
+          "mean_int8_input_clips": 0.032
+        },
+        {
+          "batch_tag": "batch_7",
+          "batch_id": 7,
+          "n_samples": 3613,
+          "naive_int4_accuracy_pct": 18.5995,
+          "naive_silent_error_rate_pct": 81.4005,
+          "guarded_accepted_accuracy_pct": 18.0172,
+          "guarded_safe_hold_rate_pct": 3.6812,
+          "guarded_silent_error_rate_pct": 78.9648,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 1.6607,
+            "accepted_accuracy_pct": 18.7447,
+            "silent_error_rate_pct": 79.9059,
+            "aurc": 0.8616
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 2.4633,
+            "accepted_accuracy_pct": 18.8706,
+            "silent_error_rate_pct": 79.1309,
+            "aurc": 0.7262
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 2.4633,
+            "accepted_accuracy_pct": 18.8706,
+            "silent_error_rate_pct": 79.1309,
+            "aurc": 0.7262
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 82.1201,
+            "accepted_accuracy_pct": 33.9009,
+            "silent_error_rate_pct": 11.8184,
+            "aurc": 0.7609
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 7.1132,
+            "accepted_accuracy_pct": 35.9654,
+            "silent_error_rate_pct": 59.4797,
+            "aurc": 0.5807,
+            "ttn_naive_accuracy_pct": 34.9294
+          },
+          "mean_l1_mahalanobis_score": 3252.83,
+          "mean_int4_clips": 0.762,
+          "mean_int8_input_clips": 0.131
+        },
+        {
+          "batch_tag": "batch_8",
+          "batch_id": 8,
+          "n_samples": 294,
+          "naive_int4_accuracy_pct": 19.0476,
+          "naive_silent_error_rate_pct": 80.9524,
+          "guarded_accepted_accuracy_pct": 18.6851,
+          "guarded_safe_hold_rate_pct": 1.7007,
+          "guarded_silent_error_rate_pct": 79.932,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 19.0476,
+            "silent_error_rate_pct": 80.9524,
+            "aurc": 0.8774
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 19.0476,
+            "silent_error_rate_pct": 80.9524,
+            "aurc": 0.5841
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 0.0,
+            "accepted_accuracy_pct": 19.0476,
+            "silent_error_rate_pct": 80.9524,
+            "aurc": 0.5841
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 100.0,
+            "accepted_accuracy_pct": 100.0,
+            "silent_error_rate_pct": 0.0,
+            "aurc": 0.7559
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 21.7687,
+            "accepted_accuracy_pct": 23.4783,
+            "silent_error_rate_pct": 59.8639,
+            "aurc": 0.797,
+            "ttn_naive_accuracy_pct": 18.3673
+          },
+          "mean_l1_mahalanobis_score": 3931.02,
+          "mean_int4_clips": 1.003,
+          "mean_int8_input_clips": 0.599
+        },
+        {
+          "batch_tag": "batch_9",
+          "batch_id": 9,
+          "n_samples": 470,
+          "naive_int4_accuracy_pct": 17.8723,
+          "naive_silent_error_rate_pct": 82.1277,
+          "guarded_accepted_accuracy_pct": 18.7082,
+          "guarded_safe_hold_rate_pct": 4.4681,
+          "guarded_silent_error_rate_pct": 77.6596,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 0.2128,
+            "accepted_accuracy_pct": 17.9104,
+            "silent_error_rate_pct": 81.9149,
+            "aurc": 0.8649
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 6.8085,
+            "accepted_accuracy_pct": 12.7854,
+            "silent_error_rate_pct": 81.2766,
+            "aurc": 0.8328
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 6.8085,
+            "accepted_accuracy_pct": 12.7854,
+            "silent_error_rate_pct": 81.2766,
+            "aurc": 0.8328
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 31.7021,
+            "accepted_accuracy_pct": 22.7414,
+            "silent_error_rate_pct": 52.766,
+            "aurc": 0.6422
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 16.8085,
+            "accepted_accuracy_pct": 26.3427,
+            "silent_error_rate_pct": 61.2766,
+            "aurc": 0.8222,
+            "ttn_naive_accuracy_pct": 22.3404
+          },
+          "mean_l1_mahalanobis_score": 2804.45,
+          "mean_int4_clips": 0.96,
+          "mean_int8_input_clips": 0.021
+        },
+        {
+          "batch_tag": "batch_10",
+          "batch_id": 10,
+          "n_samples": 3600,
+          "naive_int4_accuracy_pct": 23.2222,
+          "naive_silent_error_rate_pct": 76.7778,
+          "guarded_accepted_accuracy_pct": 23.5931,
+          "guarded_safe_hold_rate_pct": 7.6944,
+          "guarded_silent_error_rate_pct": 70.5278,
+          "msp_baseline": {
+            "safe_hold_rate_pct": 4.0,
+            "accepted_accuracy_pct": 23.3218,
+            "silent_error_rate_pct": 73.6111,
+            "aurc": 0.7815
+          },
+          "energy_baseline": {
+            "safe_hold_rate_pct": 4.3611,
+            "accepted_accuracy_pct": 22.9161,
+            "silent_error_rate_pct": 73.7222,
+            "aurc": 0.7791
+          },
+          "react_energy": {
+            "safe_hold_rate_pct": 4.3611,
+            "accepted_accuracy_pct": 22.9161,
+            "silent_error_rate_pct": 73.7222,
+            "aurc": 0.7791
+          },
+          "shrinkage_mahalanobis": {
+            "safe_hold_rate_pct": 65.0,
+            "accepted_accuracy_pct": 21.4286,
+            "silent_error_rate_pct": 27.5,
+            "aurc": 0.7986
+          },
+          "ttn_crc_frontier": {
+            "safe_hold_rate_pct": 13.9444,
+            "accepted_accuracy_pct": 31.1814,
+            "silent_error_rate_pct": 59.2222,
+            "aurc": 0.7128,
+            "ttn_naive_accuracy_pct": 29.3333
+          },
+          "mean_l1_mahalanobis_score": 3377.47,
+          "mean_int4_clips": 0.926,
+          "mean_int8_input_clips": 0.181
+        }
+      ]
+    }
+  },
+  "sklearn_digits_10seed": {
+    "benchmark": "sklearn_digits_multiseed",
+    "split_protocol": "split_and_init_seeds",
+    "n_seeds": 10,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "temperature": 4.0,
+    "alpha": 0.25,
+    "kl_vs_same_trainer_ce": {
+      "wins": 5,
+      "ties": 0,
+      "losses": 5,
+      "mean_test_acc_diff": -0.0007
+    },
+    "models": [
+      {
+        "name": "teacher (256,256) fp32",
+        "mean_val_acc": 0.9825,
+        "std_val_acc": 0.0095,
+        "mean_test_acc": 0.9774,
+        "std_test_acc": 0.0046,
+        "min_test_acc": 0.9704,
+        "max_test_acc": 0.987,
+        "params": 85002,
+        "weight_bytes": 340008,
+        "per_seed_test_acc": [
+          0.9778,
+          0.9704,
+          0.9759,
+          0.987,
+          0.9796,
+          0.9759,
+          0.9815,
+          0.9796,
+          0.9741,
+          0.9722
+        ]
+      },
+      {
+        "name": "sklearn MLPClassifier hard-label",
+        "mean_val_acc": 0.9741,
+        "std_val_acc": 0.0135,
+        "mean_test_acc": 0.97,
+        "std_test_acc": 0.0076,
+        "min_test_acc": 0.9611,
+        "max_test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "per_seed_test_acc": [
+          0.9759,
+          0.9704,
+          0.9667,
+          0.9852,
+          0.963,
+          0.9611,
+          0.963,
+          0.9741,
+          0.9778,
+          0.963
+        ]
+      },
+      {
+        "name": "student same-trainer CE fp32",
+        "mean_val_acc": 0.9831,
+        "std_val_acc": 0.0094,
+        "mean_test_acc": 0.9756,
+        "std_test_acc": 0.0057,
+        "min_test_acc": 0.963,
+        "max_test_acc": 0.9833,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "per_seed_test_acc": [
+          0.9815,
+          0.9759,
+          0.963,
+          0.9833,
+          0.9759,
+          0.9704,
+          0.9722,
+          0.9741,
+          0.9796,
+          0.9796
+        ]
+      },
+      {
+        "name": "student hybrid KL(T^2)+CE fp32",
+        "mean_val_acc": 0.9852,
+        "std_val_acc": 0.0074,
+        "mean_test_acc": 0.9748,
+        "std_test_acc": 0.0049,
+        "min_test_acc": 0.9667,
+        "max_test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "per_seed_test_acc": [
+          0.9852,
+          0.9667,
+          0.9722,
+          0.9778,
+          0.9704,
+          0.9741,
+          0.9759,
+          0.9796,
+          0.9741,
+          0.9722
+        ]
+      },
+      {
+        "name": "student KL int8 W8A8 (int32)",
+        "mean_val_acc": 0.9847,
+        "std_val_acc": 0.0076,
+        "mean_test_acc": 0.975,
+        "std_test_acc": 0.0048,
+        "min_test_acc": 0.9667,
+        "max_test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 2544,
+        "per_seed_test_acc": [
+          0.9852,
+          0.9667,
+          0.9722,
+          0.9778,
+          0.9722,
+          0.9741,
+          0.9759,
+          0.9796,
+          0.9741,
+          0.9722
+        ]
+      },
+      {
+        "name": "student KL 4-bit W4A8 (int32)",
+        "mean_val_acc": 0.9799,
+        "std_val_acc": 0.0088,
+        "mean_test_acc": 0.9744,
+        "std_test_acc": 0.0045,
+        "min_test_acc": 0.9685,
+        "max_test_acc": 0.9833,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "per_seed_test_acc": [
+          0.9833,
+          0.9685,
+          0.9722,
+          0.9796,
+          0.9685,
+          0.9741,
+          0.9759,
+          0.9778,
+          0.9722,
+          0.9722
+        ]
+      },
+      {
+        "name": "student KL 4-bit WHT+GPTQ W4A8 (int32)",
+        "mean_val_acc": 0.9825,
+        "std_val_acc": 0.0089,
+        "mean_test_acc": 0.9739,
+        "std_test_acc": 0.0048,
+        "min_test_acc": 0.9667,
+        "max_test_acc": 0.9833,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "per_seed_test_acc": [
+          0.9833,
+          0.9667,
+          0.9722,
+          0.9778,
+          0.9685,
+          0.9722,
+          0.9741,
+          0.9796,
+          0.9722,
+          0.9722
+        ]
+      }
+    ]
+  },
+  "sklearn_digits_seed0": {
+    "benchmark": "sklearn_digits",
+    "cpu": "AMD64 Family 26 Model 96 Stepping 0, AuthenticAMD",
+    "seed": 0,
+    "temperature": 4.0,
+    "alpha": 0.25,
+    "splits": {
+      "train": 1068,
+      "val": 189,
+      "test": 540,
+      "features": 64
+    },
+    "teacher_mean_max_soft_prob": 0.7398,
+    "timing_config": {
+      "n_warmup": 200,
+      "n_timing": 2000
+    },
+    "binary_container_verification": {
+      "format": "LFT1",
+      "payload_weight_bytes": 1520,
+      "header_bytes": 64,
+      "total_blob_bytes": 1584
+    },
+    "models": [
+      {
+        "name": "teacher (256,256) fp32",
+        "val_acc": 1.0,
+        "test_acc": 0.9778,
+        "params": 85002,
+        "weight_bytes": 340008,
+        "median_us": 29.0,
+        "p95_us": 36.0,
+        "p99_us": 80.75,
+        "iqr_us": 11.7,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": null,
+        "training": {
+          "n_iter": 56,
+          "final_loss": 0.0014952290598545602,
+          "converged": true
+        }
+      },
+      {
+        "name": "sklearn MLPClassifier hard-label",
+        "val_acc": 1.0,
+        "test_acc": 0.9759,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "median_us": 9.3,
+        "p95_us": 14.4,
+        "p99_us": 30.21,
+        "iqr_us": 3.7,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": null,
+        "training": {
+          "n_iter": 239,
+          "final_loss": 0.008943858602719748,
+          "converged": true
+        }
+      },
+      {
+        "name": "student same-trainer CE fp32",
+        "val_acc": 0.9947,
+        "test_acc": 0.9815,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "median_us": 10.6,
+        "p95_us": 21.1,
+        "p99_us": 77.3,
+        "iqr_us": 5.1,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": null,
+        "training": {
+          "n_iter": 240,
+          "final_loss": 0.0010627846267677124,
+          "converged": true
+        }
+      },
+      {
+        "name": "student uncentered-MSE fp32",
+        "val_acc": 0.9894,
+        "test_acc": 0.9759,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "median_us": 14.7,
+        "p95_us": 18.3,
+        "p99_us": 62.04,
+        "iqr_us": 1.1,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": null,
+        "training": {
+          "n_iter": 600,
+          "final_loss": 0.007617572788149118,
+          "converged": false
+        }
+      },
+      {
+        "name": "student zero-mean-MSE fp32",
+        "val_acc": 0.9841,
+        "test_acc": 0.9778,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "median_us": 10.7,
+        "p95_us": 19.4,
+        "p99_us": 79.1,
+        "iqr_us": 5.5,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": null,
+        "training": {
+          "n_iter": 600,
+          "final_loss": 0.007038615643978119,
+          "converged": false
+        }
+      },
+      {
+        "name": "student hybrid KL(T^2)+CE fp32",
+        "val_acc": 0.9947,
+        "test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 9640,
+        "median_us": 16.1,
+        "p95_us": 21.41,
+        "p99_us": 82.91,
+        "iqr_us": 4.9,
+        "timing_mode": "fp32",
+        "agreement_with_kl_fp32": 1.0,
+        "training": {
+          "n_iter": 240,
+          "final_loss": 0.035303287812617365,
+          "converged": true
+        }
+      },
+      {
+        "name": "student KL int8 pt (dequantized fp32 timing)",
+        "val_acc": 0.9947,
+        "test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 2544,
+        "median_us": 11.6,
+        "p95_us": 20.4,
+        "p99_us": 58.83,
+        "iqr_us": 4.3,
+        "timing_mode": "dequantized_fp32",
+        "agreement_with_kl_fp32": 1.0,
+        "training": null
+      },
+      {
+        "name": "student KL int8 W8A8 (int32)",
+        "val_acc": 0.9947,
+        "test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 2544,
+        "median_us": 109.2,
+        "p95_us": 297.42,
+        "p99_us": 670.37,
+        "iqr_us": 58.53,
+        "timing_mode": "integer_w8a8",
+        "agreement_with_kl_fp32": 1.0,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit pt (dequantized fp32 timing)",
+        "val_acc": 0.9894,
+        "test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 1360,
+        "median_us": 12.1,
+        "p95_us": 17.4,
+        "p99_us": 64.37,
+        "iqr_us": 3.9,
+        "timing_mode": "dequantized_fp32",
+        "agreement_with_kl_fp32": 0.9926,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit pc (dequantized fp32 timing)",
+        "val_acc": 0.9841,
+        "test_acc": 0.9815,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "median_us": 12.4,
+        "p95_us": 17.31,
+        "p99_us": 69.01,
+        "iqr_us": 0.8,
+        "timing_mode": "dequantized_fp32",
+        "agreement_with_kl_fp32": 0.9889,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit asym-pc (dequantized fp32 timing)",
+        "val_acc": 0.9894,
+        "test_acc": 0.9815,
+        "params": 2410,
+        "weight_bytes": 1562,
+        "median_us": 9.3,
+        "p95_us": 15.1,
+        "p99_us": 52.61,
+        "iqr_us": 4.1,
+        "timing_mode": "dequantized_fp32",
+        "agreement_with_kl_fp32": 0.9963,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit pc+MSE (dequantized fp32 timing)",
+        "val_acc": 0.9894,
+        "test_acc": 0.9815,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "median_us": 12.1,
+        "p95_us": 14.4,
+        "p99_us": 22.11,
+        "iqr_us": 3.8,
+        "timing_mode": "dequantized_fp32",
+        "agreement_with_kl_fp32": 0.9963,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit W4A8 (int32)",
+        "val_acc": 0.9894,
+        "test_acc": 0.9833,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "median_us": 203.7,
+        "p95_us": 474.54,
+        "p99_us": 842.99,
+        "iqr_us": 68.12,
+        "timing_mode": "integer_w4a8",
+        "agreement_with_kl_fp32": 0.9944,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit WHT+GPTQ W4A8 (int32)",
+        "val_acc": 0.9894,
+        "test_acc": 0.9833,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "median_us": 475.75,
+        "p95_us": 1118.32,
+        "p99_us": 1563.5,
+        "iqr_us": 243.82,
+        "timing_mode": "integer_w4a8",
+        "agreement_with_kl_fp32": 0.9944,
+        "training": null
+      },
+      {
+        "name": "student KL 4-bit C99 fixed-point (int32)",
+        "val_acc": 0.9947,
+        "test_acc": 0.9852,
+        "params": 2410,
+        "weight_bytes": 1520,
+        "median_us": 186.6,
+        "p95_us": 394.05,
+        "p99_us": 798.57,
+        "iqr_us": 59.03,
+        "timing_mode": "integer_c99_sim",
+        "agreement_with_kl_fp32": 0.9907,
+        "training": null
+      }
+    ]
+  }
+}

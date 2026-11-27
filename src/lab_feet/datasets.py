@@ -25,6 +25,7 @@ import pickle
 import struct
 import sys
 import urllib.request
+import warnings
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +36,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 
 from .distill import distill_kl_student, fit_sklearn_mlp
+from .frontier import (
+    ShrinkageMahalanobisDetector,
+    calibrate_conformal_quantile,
+    calibrate_matched_abstain_threshold,
+    compute_aurc,
+    energy_ood_score,
+    msp_uncertainty_score,
+    quantize_model_wht_gptq,
+    test_time_batch_normalize,
+    train_spectral_resnet1d,
+)
 from .quantize import QuantizedModel, forward_int8, quantize_model
 from .runtime import accuracy, forward, fp32_bytes, get_layers, n_params
 from .serialize import compute_binary_header_bytes, from_binary_buffer, to_binary_buffer
@@ -84,6 +96,13 @@ class DatasetLicenseError(ValueError):
     """Raised when an `OpenEdgeDataset` fails SPDX license validation or commercial-use gating."""
 
 
+class DatasetIntegrityError(ValueError):
+    """Raised when a downloaded or supplied dataset archive fails SHA-256 or byte-size verification."""
+
+
+SplitMode = Literal["random", "temporal"]
+
+
 @dataclass(frozen=True)
 class OpenEdgeDataset:
     """Typed registry descriptor for an open-source L0 edge sensor or 1D spectral dataset."""
@@ -101,6 +120,8 @@ class OpenEdgeDataset:
     landing_url: str = ""
     archive_filename: str = ""
     citation: str = ""
+    expected_sha256: str = ""
+    expected_archive_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not self.dataset_id or not self.dataset_id.strip():
@@ -117,6 +138,16 @@ class OpenEdgeDataset:
             raise ValueError(
                 f"Unsupported default_normalizer {self.default_normalizer!r}; "
                 f"expected one of {VALID_NORMALIZERS}."
+            )
+        if self.expected_sha256:
+            sha_clean = self.expected_sha256.strip().lower()
+            if len(sha_clean) != 64 or any(c not in "0123456789abcdef" for c in sha_clean):
+                raise ValueError(
+                    f"expected_sha256 for {self.dataset_id!r} must be a 64-char hex digest."
+                )
+        if self.expected_archive_bytes is not None and self.expected_archive_bytes < 1:
+            raise ValueError(
+                f"expected_archive_bytes must be >= 1 when set, got {self.expected_archive_bytes}."
             )
         upper_lic = self.spdx_license.upper()
         if self.commercial_use_ok and any(tok in upper_lic for tok in _NON_COMMERCIAL_TOKENS):
@@ -178,6 +209,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://github.com/greydanus/mnist1d",
         archive_filename="mnist1d_data.pkl",
         citation="Greydanus & Kobak (ICML 2024), Scaling Down Deep Learning with MNIST-1D.",
+        expected_sha256="e95257676e9fb04568e46dda007da22cc8664ccba1451456afde55d7f6dd6aa5",
+        expected_archive_bytes=1642012,
     ),
     "uci_gas_sensor_drift": OpenEdgeDataset(
         dataset_id="uci_gas_sensor_drift",
@@ -193,6 +226,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://archive.ics.uci.edu/dataset/224/gas+sensor+array+drift+dataset",
         archive_filename="gas_sensor_array_drift_dataset.zip",
         citation="Vergara et al. (2012), Chemical gas sensor drift compensation using classifier ensembles, DOI:10.24432/C5RP6W.",
+        expected_sha256="91e8f466f202e7a093d657673ce47311c3e90416f7df3057966058961c351fe4",
+        expected_archive_bytes=9989262,
     ),
     "uci_har_inertial": OpenEdgeDataset(
         dataset_id="uci_har_inertial",
@@ -208,6 +243,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones",
         archive_filename="human_activity_recognition_using_smartphones.zip",
         citation="Anguita et al. (ESANN 2013), Human Activity Recognition Using Smartphones, DOI:10.24432/C54S4K.",
+        expected_sha256="c00b803081a5c797cd5e4b83700a9810b38d53d9d84e01917e090e1fdbc81031",
+        expected_archive_bytes=61005872,
     ),
     "cwru_bearing_vibration": OpenEdgeDataset(
         dataset_id="cwru_bearing_vibration",
@@ -223,6 +260,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://huggingface.co/datasets/odysseywt/CWRU",
         archive_filename="CWRU.csv",
         citation="Case Western Reserve University Bearing Data Center / odysseywt CWRU 17-feature benchmark.",
+        expected_sha256="e05c2b23c7b0d7450f31982e9d10f395fe0a8f92d93dca9f6997655aa1026ff9",
+        expected_archive_bytes=7091378,
     ),
     "uci_hydraulic_vibration": OpenEdgeDataset(
         dataset_id="uci_hydraulic_vibration",
@@ -238,6 +277,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems",
         archive_filename="condition_monitoring_of_hydraulic_systems.zip",
         citation="Helwig, Pignanelli & Schutze (I2MTC 2015), Condition Monitoring of Hydraulic Systems, DOI:10.24432/C5CW21.",
+        expected_sha256="24128aad2ee45eea7e6b63ebbd9992cdf25d0483a2cebefbfc13bc69079af1f2",
+        expected_archive_bytes=76601704,
     ),
     "sers_bacteria_raman_2026": OpenEdgeDataset(
         dataset_id="sers_bacteria_raman_2026",
@@ -253,6 +294,8 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://github.com/erkankaratas-eng/sers-gna-bacteria",
         archive_filename="sers_spectra_preprocessed.csv",
         citation="Gulmus et al. (2026), SERS spectra of nine bacterial strains on an anisotropic gold nanorod array.",
+        expected_sha256="dececbe28856c271263a17d89fbc28b229194e3676e5ca28383c279ede4ee6e7",
+        expected_archive_bytes=1715921,
     ),
     "ethanol_nir_spectroscopy": OpenEdgeDataset(
         dataset_id="ethanol_nir_spectroscopy",
@@ -268,6 +311,59 @@ OPEN_EDGE_DATASETS: dict[str, OpenEdgeDataset] = {
         landing_url="https://zenodo.org/records/11190985",
         archive_filename="EthanolLevel.zip",
         citation="Lines, Taylor & Bagnall (IEEE ICDM 2016) / Scotch Whisky Research Institute EthanolLevel, Zenodo:11190985.",
+        expected_sha256="1b0d4614fff10a998bf3abf40aaa915cfe62e97cfb7a7a67e9b24c35fa0f673c",
+        expected_archive_bytes=24066825,
+    ),
+    "olive_oil_ftir": OpenEdgeDataset(
+        dataset_id="olive_oil_ftir",
+        n_features=570,
+        n_classes=4,
+        has_temporal_drift_batches=True,
+        url="https://www.timeseriesclassification.com/aeon-toolkit/OliveOil.zip",
+        spdx_license="CC-BY-4.0",
+        commercial_use_ok=True,
+        title="FT-IR Chemometric Spectroscopy of Extra Virgin Olive Oil Geographical Origins",
+        modality="ftir_spectroscopy",
+        default_normalizer="snv_zscore",
+        landing_url="https://www.timeseriesclassification.com/description.php?Dataset=OliveOil",
+        archive_filename="OliveOil.zip",
+        citation="Tapp, Defernez & Kemsley (J. Agric. Food Chem. 2003) / Quadram Institute OliveOil FT-IR archive.",
+        expected_sha256="eb25894f92858611b641c77f3ce8e1cfca6312dd3945d07b96c392e5dc6b24c6",
+        expected_archive_bytes=520986,
+    ),
+    "coffee_ftir": OpenEdgeDataset(
+        dataset_id="coffee_ftir",
+        n_features=286,
+        n_classes=2,
+        has_temporal_drift_batches=True,
+        url="https://www.timeseriesclassification.com/aeon-toolkit/Coffee.zip",
+        spdx_license="CC-BY-4.0",
+        commercial_use_ok=True,
+        title="ATR FT-IR Chemometric Spectroscopy of Arabica vs Robusta Coffee Beans",
+        modality="ftir_spectroscopy",
+        default_normalizer="snv_zscore",
+        landing_url="https://www.timeseriesclassification.com/description.php?Dataset=Coffee",
+        archive_filename="Coffee.zip",
+        citation="Briandet, Kemsley & Wilson (J. Agric. Food Chem. 1996), Discrimination of Arabica and Robusta in Instant Coffee by FT-IR.",
+        expected_sha256="bfba9d67f4a0f2041cb8ba88b60b11f10dab60b670e40b904ac47bd7dfdf4749",
+        expected_archive_bytes=246676,
+    ),
+    "meat_ftir": OpenEdgeDataset(
+        dataset_id="meat_ftir",
+        n_features=448,
+        n_classes=3,
+        has_temporal_drift_batches=True,
+        url="https://www.timeseriesclassification.com/aeon-toolkit/Meat.zip",
+        spdx_license="CC-BY-4.0",
+        commercial_use_ok=True,
+        title="Mid-Infrared ATR FT-IR Spectroscopy of Chicken, Pork & Turkey Adulteration",
+        modality="ftir_spectroscopy",
+        default_normalizer="snv_zscore",
+        landing_url="https://www.timeseriesclassification.com/description.php?Dataset=Meat",
+        archive_filename="Meat.zip",
+        citation="Al-Jowder, Kemsley & Wilson (Food Chem. 1997), Mid-Infrared Spectroscopy of Fresh Meat Species.",
+        expected_sha256="2a45c20ef4c226a10e18ad36581d7d5cbe9ba12e9b67e6d9d3b091c21a012202",
+        expected_archive_bytes=789828,
     ),
 }
 
@@ -439,12 +535,38 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def verify_archive_integrity(
+    spec: OpenEdgeDataset,
+    path: Path,
+    *,
+    allow_unverified_sha256: bool = False,
+) -> tuple[str, int]:
+    """Compute `(sha256, nbytes)` of `path` and enforce pinned `OpenEdgeDataset` integrity."""
+    actual_bytes = int(path.stat().st_size)
+    actual_sha256 = _sha256_file(path)
+    if not allow_unverified_sha256:
+        if spec.expected_archive_bytes is not None and actual_bytes != spec.expected_archive_bytes:
+            raise DatasetIntegrityError(
+                f"Archive byte-size mismatch for {spec.dataset_id!r} at {path}: "
+                f"got {actual_bytes} B, expected {spec.expected_archive_bytes} B. "
+                f"Pass allow_unverified_sha256=True to override."
+            )
+        if spec.expected_sha256 and actual_sha256.lower() != spec.expected_sha256.lower():
+            raise DatasetIntegrityError(
+                f"Archive SHA-256 mismatch for {spec.dataset_id!r} at {path}: "
+                f"got {actual_sha256}, expected {spec.expected_sha256.lower()}. "
+                f"Pass allow_unverified_sha256=True to override."
+            )
+    return actual_sha256, actual_bytes
+
+
 def fetch_open_edge_dataset_archive(
     dataset_id: str,
     *,
     data_dir: str | Path = DEFAULT_DATA_DIR,
     force: bool = False,
     require_commercial_use: bool = True,
+    allow_unverified_sha256: bool = False,
     timeout_sec: float = 60.0,
 ) -> Path:
     """Download an `OpenEdgeDataset` archive on-demand into gitignored `data/<dataset_id>/`."""
@@ -455,6 +577,7 @@ def fetch_open_edge_dataset_archive(
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / spec.resolved_archive_filename()
     if dest.is_file() and dest.stat().st_size > 0 and not force:
+        verify_archive_integrity(spec, dest, allow_unverified_sha256=allow_unverified_sha256)
         return dest
 
     part_path = dest.with_suffix(dest.suffix + ".part")
@@ -469,6 +592,7 @@ def fetch_open_edge_dataset_archive(
                 break
             out_fh.write(chunk)
     part_path.replace(dest)
+    verify_archive_integrity(spec, dest, allow_unverified_sha256=allow_unverified_sha256)
     return dest
 
 
@@ -733,12 +857,16 @@ def _parse_sers_bacteria_csv(
     return X, y, batches, None
 
 
-def _parse_ethanol_nir_zip(
+def _parse_aeon_spectral_zip(
     path: Path,
+    train_suffix: str,
+    test_suffix: str,
+    *,
+    zero_based_labels: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     with zipfile.ZipFile(path, "r") as zf:
-        tr_txt = zf.read(_find_zip_member(zf, "EthanolLevel_TRAIN.txt")).decode("utf-8")
-        te_txt = zf.read(_find_zip_member(zf, "EthanolLevel_TEST.txt")).decode("utf-8")
+        tr_txt = zf.read(_find_zip_member(zf, train_suffix)).decode("utf-8")
+        te_txt = zf.read(_find_zip_member(zf, test_suffix)).decode("utf-8")
 
     tr_mat = np.loadtxt(io.StringIO(tr_txt), dtype=np.float64)
     te_mat = np.loadtxt(io.StringIO(te_txt), dtype=np.float64)
@@ -747,8 +875,9 @@ def _parse_ethanol_nir_zip(
     if te_mat.ndim == 1:
         te_mat = te_mat.reshape(1, -1)
 
-    y_tr = np.rint(tr_mat[:, 0]).astype(np.int64) - 1
-    y_te = np.rint(te_mat[:, 0]).astype(np.int64) - 1
+    offset = 0 if zero_based_labels else 1
+    y_tr = np.rint(tr_mat[:, 0]).astype(np.int64) - offset
+    y_te = np.rint(te_mat[:, 0]).astype(np.int64) - offset
     x_tr = tr_mat[:, 1:].astype(np.float32)
     x_te = te_mat[:, 1:].astype(np.float32)
 
@@ -757,9 +886,40 @@ def _parse_ethanol_nir_zip(
     split = np.concatenate(
         [np.zeros(len(y_tr), dtype=np.int64), np.ones(len(y_te), dtype=np.int64)]
     )
-    # Batch 0 = calibration bottle containers, Batch 1 = held-out unseen bottle container types
     batches = split.copy()
     return X, y, batches, split
+
+
+def _parse_ethanol_nir_zip(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    return _parse_aeon_spectral_zip(
+        path, "EthanolLevel_TRAIN.txt", "EthanolLevel_TEST.txt", zero_based_labels=False
+    )
+
+
+def _parse_olive_oil_ftir_zip(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    return _parse_aeon_spectral_zip(
+        path, "OliveOil_TRAIN.txt", "OliveOil_TEST.txt", zero_based_labels=False
+    )
+
+
+def _parse_coffee_ftir_zip(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    return _parse_aeon_spectral_zip(
+        path, "Coffee_TRAIN.txt", "Coffee_TEST.txt", zero_based_labels=True
+    )
+
+
+def _parse_meat_ftir_zip(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    return _parse_aeon_spectral_zip(
+        path, "Meat_TRAIN.txt", "Meat_TEST.txt", zero_based_labels=False
+    )
 
 
 _PARSERS = {
@@ -770,6 +930,9 @@ _PARSERS = {
     "uci_hydraulic_vibration": _parse_uci_hydraulic_vibration,
     "sers_bacteria_raman_2026": _parse_sers_bacteria_csv,
     "ethanol_nir_spectroscopy": _parse_ethanol_nir_zip,
+    "olive_oil_ftir": _parse_olive_oil_ftir_zip,
+    "coffee_ftir": _parse_coffee_ftir_zip,
+    "meat_ftir": _parse_meat_ftir_zip,
 }
 
 
@@ -780,6 +943,7 @@ def load_open_edge_dataset(
     archive_path: str | Path | None = None,
     auto_download: bool = False,
     require_commercial_use: bool = True,
+    allow_unverified_sha256: bool = False,
 ) -> LoadedEdgeDataset:
     """Load and parse a registered `OpenEdgeDataset` from `archive_path` or `data/<dataset_id>/`."""
     spec = get_open_edge_dataset(dataset_id)
@@ -800,9 +964,15 @@ def load_open_edge_dataset(
                 dataset_id,
                 data_dir=data_dir,
                 require_commercial_use=require_commercial_use,
+                allow_unverified_sha256=allow_unverified_sha256,
             )
         resolved = candidate
 
+    raw_sha256, _ = verify_archive_integrity(
+        spec,
+        resolved,
+        allow_unverified_sha256=allow_unverified_sha256,
+    )
     parser = _PARSERS[spec.dataset_id]
     X, y, batch_ids, predefined_split = parser(resolved)
     return LoadedEdgeDataset(
@@ -811,14 +981,66 @@ def load_open_edge_dataset(
         y=np.ascontiguousarray(y, dtype=np.int64),
         batch_ids=batch_ids,
         predefined_split=predefined_split,
-        raw_sha256=_sha256_file(resolved),
+        raw_sha256=raw_sha256,
     )
+
+
+def _safe_split_arrays(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    test_size: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stratified `train_test_split` with graceful unstratified fallback on tiny per-class counts."""
+    n = int(len(y))
+    n_te = max(1, int(round(n * test_size)))
+    n_tr = max(1, n - n_te)
+    uniq, counts = np.unique(y, return_counts=True)
+    can_stratify = bool(
+        len(uniq) >= 2
+        and int(np.min(counts)) >= 2
+        and n_te >= len(uniq)
+        and n_tr >= len(uniq)
+    )
+    return train_test_split(
+        X,
+        y,
+        test_size=test_size,
+        random_state=seed,
+        stratify=y if can_stratify else None,
+    )
+
+
+def _expand_teacher_logits_to_n_classes(
+    teacher: MLPClassifier,
+    X: np.ndarray,
+    n_classes: int,
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], np.ndarray]:
+    """Extract teacher `(W, b)` layers and guarantee `logits.shape[1] == n_classes`."""
+    t_layers = get_layers(teacher)
+    raw_logits = forward(t_layers, X)
+    classes = np.asarray(getattr(teacher, "classes_", np.arange(raw_logits.shape[1])), dtype=np.int64)
+    if raw_logits.shape[1] == n_classes and np.array_equal(classes, np.arange(n_classes, dtype=np.int64)):
+        return t_layers, raw_logits
+
+    # Pad missing unseen columns with -12.0 logit bias so student output shape stays `n_classes`
+    w_last, b_last = t_layers[-1]
+    w_full = np.zeros((w_last.shape[0], n_classes), dtype=np.float32)
+    b_full = np.full(n_classes, -12.0, dtype=np.float32)
+    for col_idx, cls_id in enumerate(classes):
+        if 0 <= int(cls_id) < n_classes and col_idx < w_last.shape[1]:
+            w_full[:, int(cls_id)] = w_last[:, col_idx]
+            b_full[int(cls_id)] = b_last[col_idx]
+    expanded_layers = [*t_layers[:-1], (w_full, b_full)]
+    return expanded_layers, forward(expanded_layers, X)
 
 
 def prepare_distill_quantize_splits(
     dataset: LoadedEdgeDataset,
     *,
     normalizer_kind: NormalizerKind | None = None,
+    split_mode: SplitMode = "random",
     test_size: float = 0.25,
     val_fraction_of_dev: float = 0.20,
     seed: int = 0,
@@ -833,33 +1055,84 @@ def prepare_distill_quantize_splits(
 ]:
     """Create leakage-free `(X_tr, y_tr, X_val, y_val, X_te, y_te, normalizer)` splits.
 
-    Respects `dataset.predefined_split` (`0`=dev, `1`=test) when provided and fits
-    `DeterministicFeatureNormalizer` strictly on `X_tr`.
+    Modes:
+    - `split_mode="random"` (default): Respects `dataset.predefined_split` (`0`=dev, `1`=test) when
+      present (`seed == 0`) or performs a stratified split across samples when `seed != 0` / no
+      predefined split exists.
+    - `split_mode="temporal"`: Requires `dataset.batch_ids` with `>= 2` batches; assigns early
+      chronological batches to `train` & `val` and strictly later batches to `test` (#36).
+    Fits `DeterministicFeatureNormalizer` strictly on `X_tr`.
     """
+    if split_mode not in ("random", "temporal"):
+        raise ValueError(f"Unsupported split_mode {split_mode!r}; expected 'random' or 'temporal'.")
     eff_kind = dataset.spec.default_normalizer if normalizer_kind is None else normalizer_kind
-    if dataset.predefined_split is not None and np.any(dataset.predefined_split == 0) and np.any(
-        dataset.predefined_split == 1
-    ):
-        dev_mask = dataset.predefined_split == 0
-        te_mask = dataset.predefined_split == 1
-        X_dev, y_dev = dataset.X[dev_mask], dataset.y[dev_mask]
+
+    if split_mode == "temporal":
+        if not dataset.spec.has_temporal_drift_batches or dataset.batch_ids is None:
+            raise ValueError(
+                f"Dataset {dataset.spec.dataset_id!r} has no batch_ids for split_mode='temporal'."
+            )
+        unique_batches = sorted(int(b) for b in np.unique(dataset.batch_ids))
+        if len(unique_batches) < 2:
+            raise ValueError(
+                f"Need >= 2 batches for split_mode='temporal', got {unique_batches}."
+            )
+        n_total_classes = len(np.unique(dataset.y))
+        k_dev = max(1, min(len(unique_batches) - 1, int(round(len(unique_batches) * (1.0 - test_size)))))
+        while k_dev < len(unique_batches) - 1:
+            dev_classes = len(np.unique(dataset.y[np.isin(dataset.batch_ids, unique_batches[:k_dev])]))
+            if dev_classes >= n_total_classes:
+                break
+            k_dev += 1
+
+        dev_batches = unique_batches[:k_dev]
+        te_batches = unique_batches[k_dev:]
+        dev_mask = np.isin(dataset.batch_ids, dev_batches)
+        te_mask = np.isin(dataset.batch_ids, te_batches)
         X_te_raw, y_te = dataset.X[te_mask], dataset.y[te_mask]
+
+        if len(dev_batches) >= 2:
+            tr_cand_batches = dev_batches[:-1]
+            val_cand_batches = [dev_batches[-1]]
+            tr_cand_mask = np.isin(dataset.batch_ids, tr_cand_batches)
+            val_cand_mask = np.isin(dataset.batch_ids, val_cand_batches)
+            if len(np.unique(dataset.y[tr_cand_mask])) >= len(np.unique(dataset.y[dev_mask])) and np.any(val_cand_mask):
+                X_tr_raw, y_tr = dataset.X[tr_cand_mask], dataset.y[tr_cand_mask]
+                X_val_raw, y_val = dataset.X[val_cand_mask], dataset.y[val_cand_mask]
+            else:
+                X_tr_raw, X_val_raw, y_tr, y_val = _safe_split_arrays(
+                    dataset.X[dev_mask], dataset.y[dev_mask], test_size=val_fraction_of_dev, seed=seed
+                )
+        else:
+            X_tr_raw, X_val_raw, y_tr, y_val = _safe_split_arrays(
+                dataset.X[dev_mask], dataset.y[dev_mask], test_size=val_fraction_of_dev, seed=seed
+            )
     else:
-        X_dev, X_te_raw, y_dev, y_te = train_test_split(
-            dataset.X,
-            dataset.y,
-            test_size=test_size,
-            random_state=seed,
-            stratify=dataset.y,
+        if (
+            dataset.predefined_split is not None
+            and seed == 0
+            and np.any(dataset.predefined_split == 0)
+            and np.any(dataset.predefined_split == 1)
+        ):
+            dev_mask = dataset.predefined_split == 0
+            te_mask = dataset.predefined_split == 1
+            X_dev, y_dev = dataset.X[dev_mask], dataset.y[dev_mask]
+            X_te_raw, y_te = dataset.X[te_mask], dataset.y[te_mask]
+        else:
+            X_dev, X_te_raw, y_dev, y_te = _safe_split_arrays(
+                dataset.X,
+                dataset.y,
+                test_size=test_size,
+                seed=seed,
+            )
+
+        X_tr_raw, X_val_raw, y_tr, y_val = _safe_split_arrays(
+            X_dev,
+            y_dev,
+            test_size=val_fraction_of_dev,
+            seed=seed,
         )
 
-    X_tr_raw, X_val_raw, y_tr, y_val = train_test_split(
-        X_dev,
-        y_dev,
-        test_size=val_fraction_of_dev,
-        random_state=seed,
-        stratify=y_dev,
-    )
     norm = DeterministicFeatureNormalizer(kind=eff_kind).fit(X_tr_raw)
     return (
         norm.transform(X_tr_raw),
@@ -882,14 +1155,20 @@ def run_open_dataset_distill_quantize(
     student_epochs: int = 180,
     teacher_max_iter: int = 260,
     normalizer_kind: NormalizerKind | None = None,
+    split_mode: SplitMode = "random",
+    include_ce_control: bool = True,
+    include_wht_gptq: bool = True,
+    include_spectral_resnet: bool = False,
+    resnet_epochs: int = 80,
     require_commercial_use: bool = True,
     seed: int = 0,
 ) -> dict[str, Any]:
-    """Run hybrid `KL(T^2)+CE` distillation + `int8` (`W8A8`) / `4-bit` (`LFT1`) quantization on `dataset`."""
+    """Run hybrid `KL(T^2)+CE` vs same-trainer `CE` + `int8`/`4-bit` (`MSE` & `WHT+GPTQ`) on `dataset`."""
     verify_dataset_license(dataset.spec, require_commercial_use=require_commercial_use)
     X_tr, y_tr, X_val, y_val, X_te, y_te, norm = prepare_distill_quantize_splits(
         dataset,
         normalizer_kind=normalizer_kind,
+        split_mode=split_mode,
         seed=seed,
     )
 
@@ -899,8 +1178,31 @@ def run_open_dataset_distill_quantize(
         random_state=seed,
     )
     teacher_diag = fit_sklearn_mlp(teacher, X_tr, y_tr)
-    t_layers = get_layers(teacher)
-    t_logits_tr = forward(t_layers, X_tr)
+    t_layers, t_logits_tr = _expand_teacher_logits_to_n_classes(
+        teacher, X_tr, dataset.spec.n_classes
+    )
+
+    ce_summary: dict[str, Any] | None = None
+    if include_ce_control:
+        ce_layers, ce_diag = distill_kl_student(
+            X_tr,
+            y_tr,
+            t_logits_tr,
+            X_val=X_val,
+            y_val=y_val,
+            hidden_sizes=student_hidden,
+            temperature=temperature,
+            alpha=1.0,
+            epochs=student_epochs,
+            seed=seed,
+        )
+        ce_te_acc = accuracy(ce_layers, X_te, y_te)
+        ce_summary = {
+            "test_acc": round(ce_te_acc, 4),
+            "params": n_params(ce_layers),
+            "weight_bytes": fp32_bytes(ce_layers),
+            "training": ce_diag.to_dict(),
+        }
 
     kl_layers, kl_diag = distill_kl_student(
         X_tr,
@@ -951,11 +1253,52 @@ def run_open_dataset_distill_quantize(
     int4_te_acc = float((int4_deq_preds == y_te).mean())
     int4_w4a8_acc = float((int4_w4a8_preds == y_te).mean())
 
-    return {
+    wht_gptq_summary: dict[str, Any] | None = None
+    if include_wht_gptq:
+        wht_q4 = quantize_model_wht_gptq(kl_layers, bits=4, X_cal=X_val, seed=seed)
+        wht_w4a8_preds = wht_q4.forward_int8(X_te, act_bits=8).argmax(axis=1)
+        wht_deq_preds = wht_q4.forward_dequant(X_te).argmax(axis=1)
+        wht_gptq_summary = {
+            "test_acc": round(float((wht_deq_preds == y_te).mean()), 4),
+            "w4a8_test_acc": round(float((wht_w4a8_preds == y_te).mean()), 4),
+            "packed_weight_bytes": wht_q4.packed_weight_bytes,
+            "total_bytes_with_rot": wht_q4.nbytes,
+            "agreement_with_kl_fp32": round(float((wht_w4a8_preds == kl_te_preds).mean()), 4),
+        }
+
+    resnet_summary: dict[str, Any] | None = None
+    if include_spectral_resnet:
+        res_fp32, res_diag = train_spectral_resnet1d(
+            X_tr,
+            y_tr,
+            teacher_logits_tr=t_logits_tr,
+            X_val=X_val,
+            y_val=y_val,
+            temperature=temperature,
+            alpha=alpha,
+            epochs=resnet_epochs,
+            seed=seed,
+        )
+        res_fp32_preds = res_fp32.forward(X_te).argmax(axis=1)
+        res_q4 = res_fp32.quantize_wht_gptq(X_val, bits=4, use_wht=True, seed=seed)
+        res_q4_preds = res_q4.forward_int8(X_te, act_bits=8).argmax(axis=1)
+        resnet_summary = {
+            "fp32_test_acc": round(float((res_fp32_preds == y_te).mean()), 4),
+            "wht_gptq_w4a8_test_acc": round(float((res_q4_preds == y_te).mean()), 4),
+            "params": res_fp32.n_params,
+            "fp32_bytes": res_fp32.fp32_bytes,
+            "packed_4bit_bytes": res_q4.packed_weight_bytes,
+            "agreement_with_fp32": round(float((res_q4_preds == res_fp32_preds).mean()), 4),
+            "training": res_diag.to_dict(),
+        }
+
+    out: dict[str, Any] = {
         "dataset_id": dataset.spec.dataset_id,
         "spdx_license": dataset.spec.spdx_license,
         "commercial_use_ok": dataset.spec.commercial_use_ok,
         "raw_sha256": dataset.raw_sha256,
+        "split_mode": split_mode,
+        "seed": int(seed),
         "normalizer": {
             "kind": norm.kind,
             "state_sha256": norm.state_sha256(),
@@ -973,6 +1316,7 @@ def run_open_dataset_distill_quantize(
             "weight_bytes": fp32_bytes(t_layers),
             "training": teacher_diag.to_dict(),
         },
+        "student_ce_fp32": ce_summary,
         "student_kl_fp32": {
             "test_acc": round(kl_te_acc, 4),
             "params": n_params(kl_layers),
@@ -992,6 +1336,11 @@ def run_open_dataset_distill_quantize(
             "agreement_with_kl_fp32": round(float((int4_deq_preds == kl_te_preds).mean()), 4),
         },
     }
+    if wht_gptq_summary is not None:
+        out["student_int4_wht_gptq"] = wht_gptq_summary
+    if resnet_summary is not None:
+        out["spectral_resnet1d"] = resnet_summary
+    return out
 
 
 def _load_drift_classifier_cls() -> Any:
@@ -1010,6 +1359,30 @@ def _load_drift_classifier_cls() -> Any:
     return mod.DriftAbstainingInt4Classifier
 
 
+def _eval_score_abstainer(
+    preds: np.ndarray,
+    y_true: np.ndarray,
+    uncertainty_scores: np.ndarray,
+    threshold: float,
+) -> dict[str, float]:
+    """Compute `safe_hold_rate_pct`, `accepted_accuracy_pct`, `silent_error_rate_pct`, and `aurc`."""
+    n = int(len(y_true))
+    corr = preds == y_true
+    abstain_mask = uncertainty_scores > threshold
+    n_abstain = int(np.sum(abstain_mask))
+    n_accept = n - n_abstain
+    n_accept_corr = int(np.sum(corr & (~abstain_mask)))
+    n_silent_err = int(np.sum((~corr) & (~abstain_mask)))
+    sel_acc = (100.0 * n_accept_corr / n_accept) if n_accept > 0 else 100.0
+    aurc = compute_aurc(uncertainty_scores, corr)
+    return {
+        "safe_hold_rate_pct": round(100.0 * n_abstain / max(1, n), 4),
+        "accepted_accuracy_pct": round(sel_acc, 4),
+        "silent_error_rate_pct": round(100.0 * n_silent_err / max(1, n), 4),
+        "aurc": round(aurc, 4),
+    }
+
+
 def evaluate_temporal_drift_abstaining_int4(
     dataset: LoadedEdgeDataset,
     *,
@@ -1020,13 +1393,16 @@ def evaluate_temporal_drift_abstaining_int4(
     require_commercial_use: bool = True,
     seed: int = 0,
 ) -> dict[str, Any]:
-    """Train & calibrate `DriftAbstainingInt4Classifier` on early source batch(es) and evaluate multi-batch drift.
+    """Train & calibrate `DriftAbstainingInt4Classifier` + abstention baselines across drift batches.
 
-    Particularly tailored for chronological sensor-aging datasets such as `uci_gas_sensor_drift`
-    (Batches `1..10` across 36 months) and progressive fault-severity datasets (`cwru_bearing_vibration`,
-    `uci_hydraulic_vibration`). Fits the feature normalizer and optional top-variance sensor channel
-    selector strictly on `source_batches` training data so zero future drift statistics leak into
-    integer ADC scale or `L1`-Mahalanobis thresholds.
+    Compares the integer 5-gate `SAFE_HOLD` monitor against:
+      - `msp_baseline`: Maximum Softmax Probability (`1 - max_c softmax(z)_c`, Hendrycks & Gimpel 2017)
+      - `energy_baseline`: Helmholtz Free Energy (`-logsumexp(logits)`, Liu et al., NeurIPS 2020)
+      - `react_energy`: `ReAct` activation-rectified Energy (`Sun et al., NeurIPS 2021`)
+      - `shrinkage_mahalanobis`: Ledoit-Wolf shrinkage Mahalanobis OOD (`Lee et al., NeurIPS 2018`)
+      - `ttn_crc_frontier`: Unlabeled Test-Time Batch Normalization (`TTN`) + Conformal Risk Control (`CRC`)
+    All abstainers are calibrated strictly on the Batch-1 calibration split (`X_cal`) at the exact
+    matched Batch-1 calibration abstain rate of the 5-gate monitor (#36).
     """
     verify_dataset_license(dataset.spec, require_commercial_use=require_commercial_use)
     if not dataset.spec.has_temporal_drift_batches or dataset.batch_ids is None:
@@ -1040,7 +1416,20 @@ def evaluate_temporal_drift_abstaining_int4(
             f"Need at least 2 distinct batches for temporal drift evaluation, got {unique_batches}."
         )
 
-    src_set = {unique_batches[0]} if source_batches is None else {int(b) for b in source_batches}
+    if source_batches is None:
+        # Use earliest batch; if earliest batch alone has < 2 classes (e.g. CWRU normal-only batch 0),
+        # expand chronologically until all classes (or len-1 batches) are covered.
+        k_src = 1
+        total_present_classes = len(np.unique(dataset.y))
+        if len(np.unique(dataset.y[dataset.batch_ids == unique_batches[0]])) < 2:
+            while k_src < len(unique_batches) - 1:
+                if len(np.unique(dataset.y[np.isin(dataset.batch_ids, unique_batches[:k_src])])) >= total_present_classes:
+                    break
+                k_src += 1
+        src_set = set(unique_batches[:k_src])
+    else:
+        src_set = {int(b) for b in source_batches}
+
     src_mask = np.isin(dataset.batch_ids, list(src_set))
     if not np.any(src_mask):
         raise ValueError(f"No samples matched source_batches={sorted(src_set)} in {unique_batches}.")
@@ -1048,20 +1437,18 @@ def evaluate_temporal_drift_abstaining_int4(
     X_src_all = dataset.X[src_mask]
     y_src_all = dataset.y[src_mask]
 
-    # Split source batch(es) stratified into 60% train, 20% OOD gate calibration, 20% source ID test
-    X_src_dev, X_src_te_raw, y_src_dev, y_src_te = train_test_split(
+    # Split source batch(es) into 60% train, 20% OOD gate calibration, 20% source ID test
+    X_src_dev, X_src_te_raw, y_src_dev, y_src_te = _safe_split_arrays(
         X_src_all,
         y_src_all,
         test_size=0.20,
-        random_state=seed,
-        stratify=y_src_all,
+        seed=seed,
     )
-    X_tr_raw, X_cal_raw, y_tr, y_cal = train_test_split(
+    X_tr_raw, X_cal_raw, y_tr, y_cal = _safe_split_arrays(
         X_src_dev,
         y_src_dev,
         test_size=0.25,
-        random_state=seed,
-        stratify=y_src_dev,
+        seed=seed,
     )
 
     eff_kind = dataset.spec.default_normalizer if normalizer_kind is None else normalizer_kind
@@ -1073,7 +1460,6 @@ def evaluate_temporal_drift_abstaining_int4(
     if max_monitor_features is not None and max_monitor_features < dataset.spec.n_features:
         if max_monitor_features < 1:
             raise ValueError(f"max_monitor_features must be >= 1, got {max_monitor_features}.")
-        # Select highest-F-ratio discriminative channels strictly on source training split
         overall_mean = np.mean(X_tr_full, axis=0)
         between_var = np.zeros(dataset.spec.n_features, dtype=np.float64)
         for c in range(dataset.spec.n_classes):
@@ -1096,6 +1482,44 @@ def evaluate_temporal_drift_abstaining_int4(
         n_classes=dataset.spec.n_classes,
     )
     clf.fit_and_calibrate(X_tr, y_tr, X_cal, y_cal, seed=seed)
+
+    sram_exceeded = bool(clf.extra_sram_bytes > 512)
+    sram_warning: str | None = None
+    if sram_exceeded:
+        sram_warning = (
+            f"OOD monitor tables occupy {clf.extra_sram_bytes} B (> 512 B MCU SRAM target) for "
+            f"n_features={clf.n_features}, n_classes={clf.n_classes}; use max_monitor_features<=32 "
+            f"(276 B @ 6 classes) or <=24 (220 B @ 6 classes) when targeting < 512 B."
+        )
+        warnings.warn(sram_warning, UserWarning, stacklevel=2)
+
+    # Measure 5-gate monitor abstain rate on Batch-1 calibration split `X_cal` and match baselines!
+    cal_5gate_abstain = float(
+        np.mean([clf.predict_drift_abstaining_int4(X_cal[i]).abstained for i in range(len(X_cal))])
+    )
+    cal_logits = clf.predict_int4_logits(X_cal, dequantize=True, react_rectify=False)
+    cal_react_logits = clf.predict_int4_logits(X_cal, dequantize=True, react_rectify=True)
+
+    cal_msp_u = msp_uncertainty_score(cal_logits)
+    cal_energy_u = energy_ood_score(cal_logits)
+    cal_react_energy_u = energy_ood_score(cal_react_logits)
+
+    mahal = ShrinkageMahalanobisDetector.fit(X_tr, y_tr, dataset.spec.n_classes)
+    cal_mahal_u = mahal.score(X_cal)
+
+    tau_msp = calibrate_matched_abstain_threshold(cal_msp_u, cal_5gate_abstain)
+    tau_energy = calibrate_matched_abstain_threshold(cal_energy_u, cal_5gate_abstain)
+    tau_react = calibrate_matched_abstain_threshold(cal_react_energy_u, cal_5gate_abstain)
+    tau_mahal = calibrate_matched_abstain_threshold(cal_mahal_u, cal_5gate_abstain)
+
+    # Frontier TTN + Conformal Risk Control (CRC): calibrate conformal threshold at matched alpha (or 5% floor)
+    src_feat_mean = np.mean(X_tr, axis=0)
+    src_feat_std = np.maximum(np.std(X_tr, axis=0), 1e-5)
+    X_cal_ttn = test_time_batch_normalize(X_cal, source_mean=src_feat_mean, source_std=src_feat_std)
+    cal_ttn_logits = clf.predict_int4_logits(X_cal_ttn, dequantize=True, react_rectify=True)
+    cal_ttn_u = msp_uncertainty_score(cal_ttn_logits)
+    crc_alpha = max(cal_5gate_abstain, 0.05)
+    tau_ttn_crc = calibrate_conformal_quantile(cal_ttn_u, alpha=crc_alpha)
 
     def _eval_split(X_eval: np.ndarray, y_eval: np.ndarray, tag: str, batch_num: int) -> dict[str, Any]:
         n = int(len(y_eval))
@@ -1125,6 +1549,35 @@ def evaluate_temporal_drift_abstaining_int4(
             int4_clips.append(p_guard.int4_clip_count)
             in_clips.append(p_guard.int8_input_clip_count)
 
+        logits_eval = clf.predict_int4_logits(X_eval, dequantize=True, react_rectify=False)
+        preds_eval = logits_eval.argmax(axis=1)
+        react_logits_eval = clf.predict_int4_logits(X_eval, dequantize=True, react_rectify=True)
+        react_preds_eval = react_logits_eval.argmax(axis=1)
+
+        msp_metrics = _eval_score_abstainer(
+            preds_eval, y_eval, msp_uncertainty_score(logits_eval), tau_msp
+        )
+        energy_metrics = _eval_score_abstainer(
+            preds_eval, y_eval, energy_ood_score(logits_eval), tau_energy
+        )
+        react_metrics = _eval_score_abstainer(
+            react_preds_eval, y_eval, energy_ood_score(react_logits_eval), tau_react
+        )
+        mahal_metrics = _eval_score_abstainer(
+            preds_eval, y_eval, mahal.score(X_eval), tau_mahal
+        )
+
+        X_eval_ttn = test_time_batch_normalize(
+            X_eval, source_mean=src_feat_mean, source_std=src_feat_std
+        )
+        ttn_logits = clf.predict_int4_logits(X_eval_ttn, dequantize=True, react_rectify=True)
+        ttn_preds = ttn_logits.argmax(axis=1)
+        ttn_naive_acc = 100.0 * float((ttn_preds == y_eval).mean()) if n > 0 else 100.0
+        ttn_crc_metrics = _eval_score_abstainer(
+            ttn_preds, y_eval, msp_uncertainty_score(ttn_logits), tau_ttn_crc
+        )
+        ttn_crc_metrics["ttn_naive_accuracy_pct"] = round(ttn_naive_acc, 4)
+
         accepted = n - guarded_abstained
         naive_acc = 100.0 * naive_correct / max(1, n)
         naive_silent_err = 100.0 - naive_acc
@@ -1140,6 +1593,11 @@ def evaluate_temporal_drift_abstaining_int4(
             "guarded_accepted_accuracy_pct": round(guarded_sel_acc, 4),
             "guarded_safe_hold_rate_pct": round(100.0 * guarded_abstained / max(1, n), 4),
             "guarded_silent_error_rate_pct": round(100.0 * guarded_silent_err / max(1, n), 4),
+            "msp_baseline": msp_metrics,
+            "energy_baseline": energy_metrics,
+            "react_energy": react_metrics,
+            "shrinkage_mahalanobis": mahal_metrics,
+            "ttn_crc_frontier": ttn_crc_metrics,
             "mean_l1_mahalanobis_score": round(float(np.mean(l1_scores)), 2),
             "mean_int4_clips": round(float(np.mean(int4_clips)), 3),
             "mean_int8_input_clips": round(float(np.mean(in_clips)), 3),
@@ -1164,6 +1622,16 @@ def evaluate_temporal_drift_abstaining_int4(
         "n_selected_features": int(feat_idx.size),
         "packed_weight_bytes": clf.packed_weight_bytes,
         "extra_sram_bytes": clf.extra_sram_bytes,
+        "sram_budget_exceeded": sram_exceeded,
+        "sram_warning": sram_warning,
+        "calibration_abstain_rates_pct": {
+            "five_gate_safe_hold": round(100.0 * cal_5gate_abstain, 4),
+            "msp_baseline": round(100.0 * float(np.mean(cal_msp_u > tau_msp)), 4),
+            "energy_baseline": round(100.0 * float(np.mean(cal_energy_u > tau_energy)), 4),
+            "react_energy": round(100.0 * float(np.mean(cal_react_energy_u > tau_react)), 4),
+            "shrinkage_mahalanobis": round(100.0 * float(np.mean(cal_mahal_u > tau_mahal)), 4),
+            "ttn_crc_frontier": round(100.0 * float(np.mean(cal_ttn_u > tau_ttn_crc)), 4),
+        },
         "normalizer": {
             "kind": norm.kind,
             "state_sha256": norm.state_sha256(),
@@ -1178,11 +1646,13 @@ __all__ = [
     "DEFAULT_DATA_DIR",
     "OPEN_EDGE_DATASETS",
     "VALID_NORMALIZERS",
+    "DatasetIntegrityError",
     "DatasetLicenseError",
     "DeterministicFeatureNormalizer",
     "LoadedEdgeDataset",
     "NormalizerKind",
     "OpenEdgeDataset",
+    "SplitMode",
     "evaluate_temporal_drift_abstaining_int4",
     "fetch_open_edge_dataset_archive",
     "get_open_edge_dataset",
@@ -1190,5 +1660,6 @@ __all__ = [
     "load_open_edge_dataset",
     "prepare_distill_quantize_splits",
     "run_open_dataset_distill_quantize",
+    "verify_archive_integrity",
     "verify_dataset_license",
 ]

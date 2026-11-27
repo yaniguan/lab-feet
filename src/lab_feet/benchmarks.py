@@ -1,4 +1,4 @@
-"""End-to-end benchmarks: sklearn digits, wet-lab instrument acoustic regimes, and lab-ears autoencoder."""
+"""End-to-end benchmarks: sklearn digits (single-seed & N-seed), synthetic wet-lab regimes, and synthetic autoencoder."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 from .distill import distill_kl_student, fit_sklearn_mlp, zero_mean_logits
+from .export_c import prepare_fixed_point_model, simulate_c99_fixed_point
+from .frontier import quantize_model_wht_gptq
 from .quantize import QuantizedModel, forward_int8, quantize_model
 from .runtime import (
     accuracy,
@@ -74,6 +76,20 @@ def run_digits_benchmark(
     t_logits_tr = forward(t_layers, X_tr)
     mean_max_soft_prob = float(softmax(t_logits_tr / temperature).max(axis=1).mean())
 
+    # Same-trainer plain CE control (`alpha=1.0`, identical Adam trainer, epochs, & val selection, #37)
+    ce_layers, ce_diag = distill_kl_student(
+        X_tr,
+        y_tr,
+        t_logits_tr,
+        X_val=X_val,
+        y_val=y_val,
+        hidden_sizes=(32,),
+        temperature=temperature,
+        alpha=1.0,
+        epochs=240,
+        seed=seed,
+    )
+
     # 1) Legacy uncentered logit MSE student (demonstrates sample-offset capacity waste)
     uncentered_reg = MLPRegressor(
         hidden_layer_sizes=(32,), max_iter=600, tol=1e-5, random_state=seed
@@ -89,7 +105,7 @@ def run_digits_benchmark(
     centered_diag = fit_sklearn_mlp(centered_reg, X_tr, centered_targets)
     centered_layers = get_layers(centered_reg)
 
-    # 3) True hybrid KL(T^2) + hard-label CE student selected on X_val
+    # 3) Hybrid KL(T^2) + hard-label CE student selected on X_val
     kl_layers, kl_diag = distill_kl_student(
         X_tr,
         y_tr,
@@ -116,6 +132,7 @@ def run_digits_benchmark(
         clip_search="activation_mse",
         X_cal=X_val,
     )
+    wht_q4 = quantize_model_wht_gptq(kl_layers, bits=4, X_cal=X_val, seed=seed)
 
     # Verify lossless flat binary round-trip on the 4-bit per-channel MSE model
     bin_blob = to_binary_buffer(q_int4_mse)
@@ -132,6 +149,8 @@ def run_digits_benchmark(
         nbytes_val: int,
         diag_dict: dict[str, Any] | None = None,
         agree_ref: np.ndarray | None = None,
+        *,
+        timing_mode: str = "fp32",
     ) -> dict[str, Any]:
         val_acc = accuracy(layers, X_val, y_val)
         te_preds = forward(layers, X_te).argmax(axis=1)
@@ -147,18 +166,56 @@ def run_digits_benchmark(
             "p95_us": round(lat.p95_us, 2),
             "p99_us": round(lat.p99_us, 2),
             "iqr_us": round(lat.iqr_us, 2),
+            "timing_mode": timing_mode,
             "agreement_with_kl_fp32": (
                 round(_agreement(te_preds, agree_ref), 4) if agree_ref is not None else None
             ),
             "training": diag_dict,
         }
 
+    def _eval_integer_variant(
+        name: str,
+        runner: Any,
+        params_count: int,
+        nbytes_val: int,
+        *,
+        timing_mode: str,
+    ) -> dict[str, Any]:
+        val_preds = runner(X_val).argmax(axis=1)
+        te_preds = runner(X_te).argmax(axis=1)
+        lat = latency_stats(runner, X_te, n_warmup=n_warmup, n_timing=n_timing)
+        return {
+            "name": name,
+            "val_acc": round(float((val_preds == y_val).mean()), 4),
+            "test_acc": round(float((te_preds == y_te).mean()), 4),
+            "params": int(params_count),
+            "weight_bytes": int(nbytes_val),
+            "median_us": round(lat.median_us, 2),
+            "p95_us": round(lat.p95_us, 2),
+            "p99_us": round(lat.p99_us, 2),
+            "iqr_us": round(lat.iqr_us, 2),
+            "timing_mode": timing_mode,
+            "agreement_with_kl_fp32": round(_agreement(te_preds, ref_kl_preds_te), 4),
+            "training": None,
+        }
+
+    c99_spec = prepare_fixed_point_model(reloaded_q4, X_cal=X_val)
+
     rows: list[dict[str, Any]] = [
         _eval_fp32_variant(
             "teacher (256,256) fp32", t_layers, fp32_bytes(t_layers), teacher_diag.to_dict()
         ),
         _eval_fp32_variant(
-            "student hard-label fp32", hard_layers, fp32_bytes(hard_layers), hard_diag.to_dict()
+            "sklearn MLPClassifier hard-label",
+            hard_layers,
+            fp32_bytes(hard_layers),
+            hard_diag.to_dict(),
+        ),
+        _eval_fp32_variant(
+            "student same-trainer CE fp32",
+            ce_layers,
+            fp32_bytes(ce_layers),
+            ce_diag.to_dict(),
         ),
         _eval_fp32_variant(
             "student uncentered-MSE fp32",
@@ -180,71 +237,74 @@ def run_digits_benchmark(
             ref_kl_preds_te,
         ),
         _eval_fp32_variant(
-            "student KL int8 (per-tensor)",
+            "student KL int8 pt (dequantized fp32 timing)",
             q_int8_pt.dequantize(),
             q_int8_pt.nbytes,
             None,
             ref_kl_preds_te,
+            timing_mode="dequantized_fp32",
+        ),
+        _eval_integer_variant(
+            "student KL int8 W8A8 (int32)",
+            lambda sample: forward_int8(q_int8_pt, sample),
+            q_int8_pt.n_params,
+            q_int8_pt.nbytes,
+            timing_mode="integer_w8a8",
+        ),
+        _eval_fp32_variant(
+            "student KL 4-bit pt (dequantized fp32 timing)",
+            q_int4_pt.dequantize(),
+            q_int4_pt.nbytes,
+            None,
+            ref_kl_preds_te,
+            timing_mode="dequantized_fp32",
+        ),
+        _eval_fp32_variant(
+            "student KL 4-bit pc (dequantized fp32 timing)",
+            q_int4_pc.dequantize(),
+            q_int4_pc.nbytes,
+            None,
+            ref_kl_preds_te,
+            timing_mode="dequantized_fp32",
+        ),
+        _eval_fp32_variant(
+            "student KL 4-bit asym-pc (dequantized fp32 timing)",
+            q_int4_asym.dequantize(),
+            q_int4_asym.nbytes,
+            None,
+            ref_kl_preds_te,
+            timing_mode="dequantized_fp32",
+        ),
+        _eval_fp32_variant(
+            "student KL 4-bit pc+MSE (dequantized fp32 timing)",
+            reloaded_q4.dequantize(),
+            reloaded_q4.nbytes,
+            None,
+            ref_kl_preds_te,
+            timing_mode="dequantized_fp32",
+        ),
+        _eval_integer_variant(
+            "student KL 4-bit W4A8 (int32)",
+            lambda sample: forward_int8(reloaded_q4, sample, act_bits=8),
+            reloaded_q4.n_params,
+            reloaded_q4.nbytes,
+            timing_mode="integer_w4a8",
+        ),
+        _eval_integer_variant(
+            "student KL 4-bit WHT+GPTQ W4A8 (int32)",
+            lambda sample: wht_q4.forward_int8(sample, act_bits=8),
+            reloaded_q4.n_params,
+            wht_q4.packed_weight_bytes,
+            timing_mode="integer_w4a8",
+        ),
+        _eval_integer_variant(
+            "student KL 4-bit C99 fixed-point (int32)",
+            lambda sample: simulate_c99_fixed_point(c99_spec, sample)[1],
+            reloaded_q4.n_params,
+            reloaded_q4.nbytes,
+            timing_mode="integer_c99_sim",
         ),
     ]
-
-    # True W8A8 integer matmul evaluation (int8 activations x int8 weights -> int32 accumulator)
-    w8a8_val_preds = forward_int8(q_int8_pt, X_val).argmax(axis=1)
-    w8a8_te_preds = forward_int8(q_int8_pt, X_te).argmax(axis=1)
-    w8a8_lat = latency_stats(
-        lambda sample: forward_int8(q_int8_pt, sample),
-        X_te,
-        n_warmup=n_warmup,
-        n_timing=n_timing,
-    )
-    rows.append(
-        {
-            "name": "student KL int8 W8A8 (int32)",
-            "val_acc": round(float((w8a8_val_preds == y_val).mean()), 4),
-            "test_acc": round(float((w8a8_te_preds == y_te).mean()), 4),
-            "params": q_int8_pt.n_params,
-            "weight_bytes": q_int8_pt.nbytes,
-            "median_us": round(w8a8_lat.median_us, 2),
-            "p95_us": round(w8a8_lat.p95_us, 2),
-            "p99_us": round(w8a8_lat.p99_us, 2),
-            "iqr_us": round(w8a8_lat.iqr_us, 2),
-            "agreement_with_kl_fp32": round(_agreement(w8a8_te_preds, ref_kl_preds_te), 4),
-            "training": None,
-        }
-    )
-
-    rows.extend(
-        [
-            _eval_fp32_variant(
-                "student KL 4-bit (per-tensor)",
-                q_int4_pt.dequantize(),
-                q_int4_pt.nbytes,
-                None,
-                ref_kl_preds_te,
-            ),
-            _eval_fp32_variant(
-                "student KL 4-bit (per-channel)",
-                q_int4_pc.dequantize(),
-                q_int4_pc.nbytes,
-                None,
-                ref_kl_preds_te,
-            ),
-            _eval_fp32_variant(
-                "student KL 4-bit (asym-pc)",
-                q_int4_asym.dequantize(),
-                q_int4_asym.nbytes,
-                None,
-                ref_kl_preds_te,
-            ),
-            _eval_fp32_variant(
-                "student KL 4-bit (pc+MSE-clip)",
-                reloaded_q4.dequantize(),
-                reloaded_q4.nbytes,
-                None,
-                ref_kl_preds_te,
-            ),
-        ]
-    )
 
     return {
         "benchmark": "sklearn_digits",
@@ -274,22 +334,182 @@ def run_digits_benchmark(
     }
 
 
+def run_digits_multiseed_benchmark(
+    *,
+    n_seeds: int = 10,
+    temperature: float = 4.0,
+    alpha: float = 0.25,
+) -> dict[str, Any]:
+    """Run N-seed split-and-init digits distillation & quantization comparison (#37)."""
+    if n_seeds < 1:
+        raise ValueError(f"n_seeds must be >= 1, got {n_seeds}.")
+
+    X, y = load_digits(return_X_y=True)
+    tracked_names = [
+        "teacher (256,256) fp32",
+        "sklearn MLPClassifier hard-label",
+        "student same-trainer CE fp32",
+        "student hybrid KL(T^2)+CE fp32",
+        "student KL int8 W8A8 (int32)",
+        "student KL 4-bit W4A8 (int32)",
+        "student KL 4-bit WHT+GPTQ W4A8 (int32)",
+    ]
+    per_model_val: dict[str, list[float]] = {k: [] for k in tracked_names}
+    per_model_test: dict[str, list[float]] = {k: [] for k in tracked_names}
+    per_model_bytes: dict[str, int] = {}
+    per_model_params: dict[str, int] = {}
+
+    for seed in range(n_seeds):
+        X_tr, y_tr, X_val, y_val, X_te, y_te = make_stratified_splits(X, y, seed=seed)
+
+        teacher_clf = MLPClassifier(hidden_layer_sizes=(256, 256), max_iter=350, random_state=seed)
+        fit_sklearn_mlp(teacher_clf, X_tr, y_tr)
+        t_layers = get_layers(teacher_clf)
+        t_logits_tr = forward(t_layers, X_tr)
+
+        hard_clf = MLPClassifier(hidden_layer_sizes=(32,), max_iter=350, random_state=seed)
+        fit_sklearn_mlp(hard_clf, X_tr, y_tr)
+        hard_layers = get_layers(hard_clf)
+
+        ce_layers, _ = distill_kl_student(
+            X_tr,
+            y_tr,
+            t_logits_tr,
+            X_val=X_val,
+            y_val=y_val,
+            hidden_sizes=(32,),
+            temperature=temperature,
+            alpha=1.0,
+            epochs=240,
+            seed=seed,
+        )
+        kl_layers, _ = distill_kl_student(
+            X_tr,
+            y_tr,
+            t_logits_tr,
+            X_val=X_val,
+            y_val=y_val,
+            hidden_sizes=(32,),
+            temperature=temperature,
+            alpha=alpha,
+            epochs=240,
+            seed=seed,
+        )
+
+        q8 = quantize_model(kl_layers, 8, per_channel=False, mode="symmetric")
+        q4 = quantize_model(
+            kl_layers, 4, per_channel=True, mode="symmetric", clip_search="activation_mse", X_cal=X_val
+        )
+        wht_q4 = quantize_model_wht_gptq(kl_layers, bits=4, X_cal=X_val, seed=seed)
+
+        def _rec(name: str, v_acc: float, te_acc: float, p_cnt: int, w_bytes: int) -> None:
+            per_model_val[name].append(v_acc)
+            per_model_test[name].append(te_acc)
+            per_model_params[name] = int(p_cnt)
+            per_model_bytes[name] = int(w_bytes)
+
+        _rec(
+            "teacher (256,256) fp32",
+            accuracy(t_layers, X_val, y_val),
+            accuracy(t_layers, X_te, y_te),
+            n_params(t_layers),
+            fp32_bytes(t_layers),
+        )
+        _rec(
+            "sklearn MLPClassifier hard-label",
+            accuracy(hard_layers, X_val, y_val),
+            accuracy(hard_layers, X_te, y_te),
+            n_params(hard_layers),
+            fp32_bytes(hard_layers),
+        )
+        _rec(
+            "student same-trainer CE fp32",
+            accuracy(ce_layers, X_val, y_val),
+            accuracy(ce_layers, X_te, y_te),
+            n_params(ce_layers),
+            fp32_bytes(ce_layers),
+        )
+        _rec(
+            "student hybrid KL(T^2)+CE fp32",
+            accuracy(kl_layers, X_val, y_val),
+            accuracy(kl_layers, X_te, y_te),
+            n_params(kl_layers),
+            fp32_bytes(kl_layers),
+        )
+        _rec(
+            "student KL int8 W8A8 (int32)",
+            float((forward_int8(q8, X_val).argmax(axis=1) == y_val).mean()),
+            float((forward_int8(q8, X_te).argmax(axis=1) == y_te).mean()),
+            q8.n_params,
+            q8.nbytes,
+        )
+        _rec(
+            "student KL 4-bit W4A8 (int32)",
+            float((forward_int8(q4, X_val, act_bits=8).argmax(axis=1) == y_val).mean()),
+            float((forward_int8(q4, X_te, act_bits=8).argmax(axis=1) == y_te).mean()),
+            q4.n_params,
+            q4.nbytes,
+        )
+        _rec(
+            "student KL 4-bit WHT+GPTQ W4A8 (int32)",
+            float((wht_q4.forward_int8(X_val, act_bits=8).argmax(axis=1) == y_val).mean()),
+            float((wht_q4.forward_int8(X_te, act_bits=8).argmax(axis=1) == y_te).mean()),
+            q4.n_params,
+            wht_q4.packed_weight_bytes,
+        )
+
+    kl_accs = per_model_test["student hybrid KL(T^2)+CE fp32"]
+    ce_accs = per_model_test["student same-trainer CE fp32"]
+    wins = sum(1 for k, c in zip(kl_accs, ce_accs) if k > c + 1e-12)
+    losses = sum(1 for k, c in zip(kl_accs, ce_accs) if k < c - 1e-12)
+    ties = int(n_seeds) - wins - losses
+
+    rows_summary: list[dict[str, Any]] = []
+    for name in tracked_names:
+        v_arr = np.asarray(per_model_val[name], dtype=np.float64)
+        t_arr = np.asarray(per_model_test[name], dtype=np.float64)
+        rows_summary.append(
+            {
+                "name": name,
+                "mean_val_acc": round(float(np.mean(v_arr)), 4),
+                "std_val_acc": round(float(np.std(v_arr)), 4),
+                "mean_test_acc": round(float(np.mean(t_arr)), 4),
+                "std_test_acc": round(float(np.std(t_arr)), 4),
+                "min_test_acc": round(float(np.min(t_arr)), 4),
+                "max_test_acc": round(float(np.max(t_arr)), 4),
+                "params": per_model_params[name],
+                "weight_bytes": per_model_bytes[name],
+                "per_seed_test_acc": [round(float(x), 4) for x in t_arr],
+            }
+        )
+
+    return {
+        "benchmark": "sklearn_digits_multiseed",
+        "split_protocol": "split_and_init_seeds",
+        "n_seeds": int(n_seeds),
+        "seeds": list(range(n_seeds)),
+        "temperature": temperature,
+        "alpha": alpha,
+        "kl_vs_same_trainer_ce": {
+            "wins": int(wins),
+            "ties": int(ties),
+            "losses": int(losses),
+            "mean_test_acc_diff": round(float(np.mean(np.asarray(kl_accs) - np.asarray(ce_accs))), 4),
+        },
+        "models": rows_summary,
+    }
+
+
 def generate_wetlab_spectral_dataset(
     n_samples: int = 1800,
     n_features: int = 48,
     seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate deterministic 6-regime wet-lab benchtop acoustic/vibration mel-band spectra.
-
-    Regimes model non-linear harmonic & cross-band couplings observed in `lab-ears` benchtop sensors:
-      0: normal_orbital_shaker, 1: ultrasonic_cavitation, 2: pipette_air_aspiration,
-      3: centrifuge_imbalance, 4: peltier_thermal_oscillation, 5: dry_pump_stall.
-    """
+    """Generate a synthetic 6-class toy benchmark (`i.i.d.` Gaussian inputs + random 2-layer oracle)."""
     rng = np.random.default_rng(seed)
     n_classes = 6
     X = rng.normal(0.0, 1.0, size=(n_samples, n_features)).astype(np.float32)
 
-    # Smooth two-layer ReLU + quadratic cross-harmonic ground-truth acoustic response over X
     W1 = rng.normal(0.0, 0.35, size=(n_features, 64)).astype(np.float32)
     W2 = rng.normal(0.0, 0.45, size=(64, n_classes)).astype(np.float32)
     h = np.maximum(X @ W1, 0.0) + 0.25 * np.square(X[:, :16] @ W1[:16, :])
@@ -306,7 +526,7 @@ def run_wetlab_acoustic_benchmark(
     n_warmup: int = 100,
     n_timing: int = 500,
 ) -> dict[str, Any]:
-    """Benchmark distillation & 4-bit quantization on 6-class wet-lab instrument spectral regimes."""
+    """Benchmark distillation & 4-bit quantization on the synthetic 6-class 48-feature toy task."""
     X, y = generate_wetlab_spectral_dataset(n_samples=1800, n_features=48, seed=seed)
     X_tr, y_tr, X_val, y_val, X_te, y_te = make_stratified_splits(X, y, seed=seed)
 
@@ -320,6 +540,18 @@ def run_wetlab_acoustic_benchmark(
     h_layers = get_layers(hard)
 
     t_logits_tr = forward(t_layers, X_tr)
+    ce_layers, ce_diag = distill_kl_student(
+        X_tr,
+        y_tr,
+        t_logits_tr,
+        X_val=X_val,
+        y_val=y_val,
+        hidden_sizes=student_hidden,
+        temperature=temperature,
+        alpha=1.0,
+        epochs=260,
+        seed=seed,
+    )
     kl_layers, kl_diag = distill_kl_student(
         X_tr,
         y_tr,
@@ -345,12 +577,25 @@ def run_wetlab_acoustic_benchmark(
     ref_preds = forward(kl_layers, X_te).argmax(axis=1)
 
     models_summary: list[dict[str, Any]] = []
-    for label, layers, nb, ref in [
-        ("wetlab teacher (256,256) fp32", t_layers, fp32_bytes(t_layers), None),
-        ("wetlab student (16,) hard fp32", h_layers, fp32_bytes(h_layers), None),
-        ("wetlab student (16,) KL+CE fp32", kl_layers, fp32_bytes(kl_layers), ref_preds),
-        ("wetlab student (16,) int8 pc", q8.dequantize(), q8.nbytes, ref_preds),
-        ("wetlab student (16,) 4-bit pc+MSE", q4.dequantize(), q4.nbytes, ref_preds),
+    for label, layers, nb, ref, t_mode in [
+        ("synthetic wetlab teacher (256,256) fp32", t_layers, fp32_bytes(t_layers), None, "fp32"),
+        ("synthetic wetlab sklearn MLPClassifier hard-label", h_layers, fp32_bytes(h_layers), None, "fp32"),
+        ("synthetic wetlab same-trainer CE (16,) fp32", ce_layers, fp32_bytes(ce_layers), None, "fp32"),
+        ("synthetic wetlab student (16,) KL+CE fp32", kl_layers, fp32_bytes(kl_layers), ref_preds, "fp32"),
+        (
+            "synthetic wetlab int8 pc (dequantized fp32 timing)",
+            q8.dequantize(),
+            q8.nbytes,
+            ref_preds,
+            "dequantized_fp32",
+        ),
+        (
+            "synthetic wetlab 4-bit pc+MSE (dequantized fp32 timing)",
+            q4.dequantize(),
+            q4.nbytes,
+            ref_preds,
+            "dequantized_fp32",
+        ),
     ]:
         lat = latency_stats(layers, X_te, n_warmup=n_warmup, n_timing=n_timing)
         te_preds = forward(layers, X_te).argmax(axis=1)
@@ -365,14 +610,40 @@ def run_wetlab_acoustic_benchmark(
                 "p95_us": round(lat.p95_us, 2),
                 "p99_us": round(lat.p99_us, 2),
                 "iqr_us": round(lat.iqr_us, 2),
+                "timing_mode": t_mode,
                 "agreement_with_kl_fp32": (
                     round(_agreement(te_preds, ref), 4) if ref is not None else None
                 ),
             }
         )
 
+    w4a8_lat = latency_stats(
+        lambda sample: forward_int8(q4, sample, act_bits=8),
+        X_te,
+        n_warmup=n_warmup,
+        n_timing=n_timing,
+    )
+    w4a8_val_preds = forward_int8(q4, X_val, act_bits=8).argmax(axis=1)
+    w4a8_te_preds = forward_int8(q4, X_te, act_bits=8).argmax(axis=1)
+    models_summary.append(
+        {
+            "name": "synthetic wetlab 4-bit W4A8 (int32)",
+            "val_acc": round(float((w4a8_val_preds == y_val).mean()), 4),
+            "test_acc": round(float((w4a8_te_preds == y_te).mean()), 4),
+            "params": q4.n_params,
+            "weight_bytes": int(q4.nbytes),
+            "median_us": round(w4a8_lat.median_us, 2),
+            "p95_us": round(w4a8_lat.p95_us, 2),
+            "p99_us": round(w4a8_lat.p99_us, 2),
+            "iqr_us": round(w4a8_lat.iqr_us, 2),
+            "timing_mode": "integer_w4a8",
+            "agreement_with_kl_fp32": round(_agreement(w4a8_te_preds, ref_preds), 4),
+        }
+    )
+
     return {
-        "benchmark": "wetlab_acoustic_regimes",
+        "benchmark": "synthetic_wetlab_acoustic_regimes",
+        "is_synthetic": True,
         "splits": {
             "train": int(len(X_tr)),
             "val": int(len(X_val)),
@@ -381,7 +652,8 @@ def run_wetlab_acoustic_benchmark(
         },
         "training": {
             "teacher": t_diag.to_dict(),
-            "hard_student": h_diag.to_dict(),
+            "sklearn_hard_student": h_diag.to_dict(),
+            "same_trainer_ce_student": ce_diag.to_dict(),
             "kl_student": kl_diag.to_dict(),
         },
         "models": models_summary,
@@ -389,9 +661,8 @@ def run_wetlab_acoustic_benchmark(
 
 
 def run_autoencoder_compression_benchmark(*, seed: int = 0) -> dict[str, Any]:
-    """Compress a `lab-ears` `320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320` MLPRegressor autoencoder."""
+    """Compress a synthetic 8-D linear subspace `320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320` autoencoder."""
     rng = np.random.default_rng(seed)
-    # Normal benchtop mel-frame patches live near an 8D harmonic subspace in R^320
     basis = rng.normal(0.0, 0.4, size=(8, 320)).astype(np.float32)
     z_tr = rng.normal(0.0, 1.0, size=(320, 8)).astype(np.float32)
     z_te_norm = rng.normal(0.0, 1.0, size=(80, 8)).astype(np.float32)
@@ -426,13 +697,13 @@ def run_autoencoder_compression_benchmark(*, seed: int = 0) -> dict[str, Any]:
     q4_norm_err = _recon_mse(q4.dequantize(), X_norm)
     q4_anom_err = _recon_mse(q4.dequantize(), X_anom)
 
-    # Pairwise AUROC (probability that an anomalous frame scores higher MSE than a normal frame)
     fp32_auroc = float((fp32_anom_err[:, None] > fp32_norm_err[None, :]).mean())
     q4_auroc = float((q4_anom_err[:, None] > q4_norm_err[None, :]).mean())
     fp32_total = fp32_bytes(ae_layers)
 
     return {
-        "benchmark": "lab_ears_autoencoder_compression",
+        "benchmark": "synthetic_lab_ears_autoencoder_compression",
+        "is_synthetic": True,
         "architecture": "320 -> 128 -> 128 -> 8 -> 128 -> 128 -> 320",
         "params": n_params(ae_layers),
         "fp32_bytes": fp32_total,

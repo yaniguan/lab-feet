@@ -18,8 +18,8 @@ from typing import Any, Literal
 
 import numpy as np
 
-from .export_c import prepare_fixed_point_model
 from .quantize import QuantizedModel, pack_4bit, unpack_4bit
+from .runtime import _apply_hidden_activation
 
 # ONNX TensorProto.DataType enum constants (onnx.proto3)
 ONNX_FLOAT = 1
@@ -261,16 +261,31 @@ def export_quantized_graph(
             else:
                 cur_tensor = add_out
     else:
-        # Static QLinearMatMul mode (`QuantizeLinear` -> `QLinearMatMul` -> `DequantizeLinear` -> `Add` -> act)
-        fp_spec = prepare_fixed_point_model(
-            QuantizedModel(layers=model.layers, activation="relu" if model.activation != "identity" else "identity"),
-            input_scale=input_scale,
-            X_cal=X_cal,
-        )
+        # Static integer mode:
+        # - Hidden layers: `QuantizeLinear` -> `QLinearMatMul` (pre-bias calibrated scale & zp) ->
+        #   `DequantizeLinear` -> `Add` -> activation -> `QuantizeLinear` (post-activation scale).
+        # - Final output layer: `MatMulInteger` (`int8 x int8 -> int32`) -> `Cast` (`FLOAT`) ->
+        #   `Mul` (`x_scale * w_scale`) -> `Add` (`bias`), avoiding int8 logit clipping (#34).
+        if X_cal is not None:
+            cal_arr = np.asarray(X_cal, dtype=np.float32)
+            if cal_arr.ndim == 1:
+                cal_arr = cal_arr.reshape(1, -1)
+        else:
+            rng = np.random.default_rng(0)
+            cal_arr = rng.normal(0.0, 1.0, size=(64, d_in_0)).astype(np.float32)
+
+        if input_scale is None:
+            p999 = float(np.percentile(np.abs(cal_arr), 99.9)) if cal_arr.size > 0 else 1.0
+            max_in = float(np.max(np.abs(cal_arr))) if cal_arr.size > 0 else 1.0
+            in_scale_val = max(max(p999 * 1.15, max_in * 1.02) / 127.0, 1e-5)
+        else:
+            in_scale_val = max(float(input_scale), 1e-12)
+
         zero_i8_raw = np.array(0, dtype=np.int8).tobytes()
         initializers.append(_make_initializer_entry("zero_zp_i8", "INT8", [], zero_i8_raw))
 
-        in_scale_raw = np.array(float(fp_spec["input_scale"]), dtype="<f4").tobytes()
+        in_scale_f32 = np.float32(in_scale_val)
+        in_scale_raw = np.array(in_scale_f32, dtype="<f4").tobytes()
         initializers.append(_make_initializer_entry("in_scale", "FLOAT", [], in_scale_raw))
         nodes.append(
             {
@@ -283,19 +298,23 @@ def export_quantized_graph(
         )
         cur_q = "l0_in_q"
         cur_s = "in_scale"
+        cur_zp = "zero_zp_i8"
+        cur_s_val = float(in_scale_f32)
+        cur_zp_val = 0
+        cur_q_cal = np.clip(np.rint(cal_arr / cur_s_val), -128, 127).astype(np.int8)
 
         for idx, layer in enumerate(model.layers):
             d_in, d_out = layer.shape
             is_hidden = idx < len(model.layers) - 1
             p = f"l{idx}"
-            lspec = fp_spec["layers"][idx]
 
             w_i8 = np.ascontiguousarray(layer.unpack_codes(), dtype=np.int8)
             initializers.append(_make_initializer_entry(f"{p}_w_i8", "INT8", [d_in, d_out], w_i8.tobytes()))
 
             if layer.per_channel:
+                ws_arr = np.ascontiguousarray(layer.scale.reshape(d_out), dtype="<f4")
                 ws_dims = [d_out]
-                ws_raw = np.ascontiguousarray(layer.scale.reshape(d_out), dtype="<f4").tobytes()
+                ws_raw = ws_arr.tobytes()
                 wzp_arr = (
                     layer.zero_point.reshape(d_out).astype(np.int8)
                     if layer.zero_point is not None
@@ -303,66 +322,107 @@ def export_quantized_graph(
                 )
                 wzp_dims = [d_out]
                 wzp_raw = wzp_arr.tobytes()
+                ws_bcast = ws_arr.astype(np.float32)[None, :]
+                wzp_bcast = wzp_arr.astype(np.int32)[None, :]
             else:
+                ws_scalar = np.float32(float(layer.scale.reshape(-1)[0]))
                 ws_dims = []
-                ws_raw = np.array(float(layer.scale.reshape(-1)[0]), dtype="<f4").tobytes()
+                ws_raw = np.array(ws_scalar, dtype="<f4").tobytes()
                 wzp_val = int(layer.zero_point.reshape(-1)[0]) if layer.zero_point is not None else 0
                 wzp_dims = []
                 wzp_raw = np.array(wzp_val, dtype=np.int8).tobytes()
+                ws_bcast = np.array([[float(ws_scalar)]], dtype=np.float32)
+                wzp_bcast = np.array([[wzp_val]], dtype=np.int32)
 
             initializers.append(_make_initializer_entry(f"{p}_w_scale", "FLOAT", ws_dims, ws_raw))
             initializers.append(_make_initializer_entry(f"{p}_w_zp", "INT8", wzp_dims, wzp_raw))
 
-            # Output scale for QLinearMatMul (`int8` output before bias addition)
-            y_scale_val = max(float(lspec["out_scale"]) * (256.0 if not is_hidden else 1.0), 1e-5)
-            initializers.append(
-                _make_initializer_entry(
-                    f"{p}_y_scale", "FLOAT", [], np.array(y_scale_val, dtype="<f4").tobytes()
-                )
-            )
-            b_raw = np.ascontiguousarray(layer.bias.reshape(d_out), dtype="<f4").tobytes()
-            initializers.append(_make_initializer_entry(f"{p}_bias", "FLOAT", [d_out], b_raw))
+            b_f32 = np.ascontiguousarray(layer.bias.reshape(d_out), dtype="<f4")
+            initializers.append(_make_initializer_entry(f"{p}_bias", "FLOAT", [d_out], b_f32.tobytes()))
 
-            qmm_out = f"{p}_mm_q"
-            nodes.append(
-                {
-                    "name": f"{p}_qlinear_matmul",
-                    "op_type": "QLinearMatMul",
-                    "inputs": [
-                        cur_q,
-                        cur_s,
-                        "zero_zp_i8",
-                        f"{p}_w_i8",
-                        f"{p}_w_scale",
-                        f"{p}_w_zp",
-                        f"{p}_y_scale",
-                        "zero_zp_i8",
-                    ],
-                    "outputs": [qmm_out],
-                    "attributes": {},
-                }
-            )
-            deq_out = f"{p}_mm_f32"
-            nodes.append(
-                {
-                    "name": f"{p}_dequant_out",
-                    "op_type": "DequantizeLinear",
-                    "inputs": [qmm_out, f"{p}_y_scale", "zero_zp_i8"],
-                    "outputs": [deq_out],
-                    "attributes": {},
-                }
-            )
-            add_out = f"{p}_pre_act" if (is_hidden and act_op is not None) else (f"{p}_out" if is_hidden else "logits")
-            nodes.append(
-                {
-                    "name": f"{p}_add_bias",
-                    "op_type": "Add",
-                    "inputs": [deq_out, f"{p}_bias"],
-                    "outputs": [add_out],
-                    "attributes": {},
-                }
-            )
             if is_hidden:
+                # Calibrate QLinearMatMul output scale & zero-point from PRE-BIAS matmul range on X_cal
+                acc_cal = np.matmul(
+                    cur_q_cal.astype(np.int32) - cur_zp_val,
+                    w_i8.astype(np.int32) - wzp_bcast,
+                )
+                mm_cal = acc_cal.astype(np.float32) * (np.float32(cur_s_val) * ws_bcast)
+                if mm_cal.size > 0:
+                    mm_lo_raw = min(
+                        float(np.min(mm_cal)) * 1.10,
+                        float(np.percentile(mm_cal, 0.1)) * 1.15,
+                        0.0,
+                    )
+                    mm_hi_raw = max(
+                        float(np.max(mm_cal)) * 1.10,
+                        float(np.percentile(mm_cal, 99.9)) * 1.15,
+                        0.0,
+                    )
+                else:
+                    mm_lo_raw, mm_hi_raw = -1.0, 1.0
+
+                mm_span = mm_hi_raw - mm_lo_raw
+                mm_y_scale_f32 = np.float32(max(mm_span / 255.0, 1e-5))
+                mm_y_zp_i8 = np.int8(
+                    int(np.clip(np.rint(-128.0 - mm_lo_raw / float(mm_y_scale_f32)), -128, 127))
+                )
+
+                initializers.append(
+                    _make_initializer_entry(
+                        f"{p}_mm_y_scale",
+                        "FLOAT",
+                        [],
+                        np.array(mm_y_scale_f32, dtype="<f4").tobytes(),
+                    )
+                )
+                initializers.append(
+                    _make_initializer_entry(
+                        f"{p}_mm_y_zp",
+                        "INT8",
+                        [],
+                        np.array(mm_y_zp_i8, dtype=np.int8).tobytes(),
+                    )
+                )
+
+                qmm_out = f"{p}_mm_q"
+                nodes.append(
+                    {
+                        "name": f"{p}_qlinear_matmul",
+                        "op_type": "QLinearMatMul",
+                        "inputs": [
+                            cur_q,
+                            cur_s,
+                            cur_zp,
+                            f"{p}_w_i8",
+                            f"{p}_w_scale",
+                            f"{p}_w_zp",
+                            f"{p}_mm_y_scale",
+                            f"{p}_mm_y_zp",
+                        ],
+                        "outputs": [qmm_out],
+                        "attributes": {},
+                    }
+                )
+                deq_out = f"{p}_mm_f32"
+                nodes.append(
+                    {
+                        "name": f"{p}_dequant_out",
+                        "op_type": "DequantizeLinear",
+                        "inputs": [qmm_out, f"{p}_mm_y_scale", f"{p}_mm_y_zp"],
+                        "outputs": [deq_out],
+                        "attributes": {},
+                    }
+                )
+                add_out = f"{p}_pre_act" if act_op is not None else f"{p}_out"
+                nodes.append(
+                    {
+                        "name": f"{p}_add_bias",
+                        "op_type": "Add",
+                        "inputs": [deq_out, f"{p}_bias"],
+                        "outputs": [add_out],
+                        "attributes": {},
+                    }
+                )
                 if act_op is not None:
                     act_out = f"{p}_act"
                     nodes.append(
@@ -376,18 +436,101 @@ def export_quantized_graph(
                     )
                 else:
                     act_out = add_out
+
+                # Propagate quantized calibration state through hidden layer to calibrate post-act scale
+                eff_mm_s = (np.float32(cur_s_val) * ws_bcast) / mm_y_scale_f32
+                qmm_cal = np.clip(
+                    np.rint(acc_cal.astype(np.float32) * eff_mm_s) + np.float32(mm_y_zp_i8),
+                    -128,
+                    127,
+                ).astype(np.int8)
+                deq_cal = (qmm_cal.astype(np.float32) - np.float32(mm_y_zp_i8)) * mm_y_scale_f32
+                pre_act_cal = deq_cal + b_f32.astype(np.float32)[None, :]
+                act_cal = _apply_hidden_activation(pre_act_cal, model.activation)
+
+                if act_cal.size > 0:
+                    p999_act = float(np.percentile(np.abs(act_cal), 99.9))
+                    max_act = float(np.max(np.abs(act_cal)))
+                    act_scale_f32 = np.float32(max(max(p999_act * 1.15, max_act * 1.02) / 127.0, 1e-5))
+                else:
+                    act_scale_f32 = np.float32(1.0 / 127.0)
+
+                initializers.append(
+                    _make_initializer_entry(
+                        f"{p}_act_scale",
+                        "FLOAT",
+                        [],
+                        np.array(act_scale_f32, dtype="<f4").tobytes(),
+                    )
+                )
                 next_q = f"l{idx + 1}_in_q"
                 nodes.append(
                     {
                         "name": f"{p}_requant_act",
                         "op_type": "QuantizeLinear",
-                        "inputs": [act_out, f"{p}_y_scale", "zero_zp_i8"],
+                        "inputs": [act_out, f"{p}_act_scale", "zero_zp_i8"],
                         "outputs": [next_q],
                         "attributes": {},
                     }
                 )
                 cur_q = next_q
-                cur_s = f"{p}_y_scale"
+                cur_s = f"{p}_act_scale"
+                cur_zp = "zero_zp_i8"
+                cur_s_val = float(act_scale_f32)
+                cur_zp_val = 0
+                cur_q_cal = np.clip(np.rint(act_cal / cur_s_val), -128, 127).astype(np.int8)
+            else:
+                # Final output layer stays in int32 like simulate_c99_fixed_point:
+                # MatMulInteger (int8 x int8 -> int32) -> Cast (FLOAT) -> Mul (x_scale * w_scale) -> Add (bias)
+                mm_i32 = f"{p}_mm_i32"
+                nodes.append(
+                    {
+                        "name": f"{p}_matmul_integer",
+                        "op_type": "MatMulInteger",
+                        "inputs": [cur_q, f"{p}_w_i8", cur_zp, f"{p}_w_zp"],
+                        "outputs": [mm_i32],
+                        "attributes": {},
+                    }
+                )
+                mm_f32_raw = f"{p}_mm_f32_raw"
+                nodes.append(
+                    {
+                        "name": f"{p}_cast_logits",
+                        "op_type": "Cast",
+                        "inputs": [mm_i32],
+                        "outputs": [mm_f32_raw],
+                        "attributes": {"to": ONNX_FLOAT},
+                    }
+                )
+                xw_scale = f"{p}_xw_scale"
+                nodes.append(
+                    {
+                        "name": f"{p}_mul_xw_scale",
+                        "op_type": "Mul",
+                        "inputs": [cur_s, f"{p}_w_scale"],
+                        "outputs": [xw_scale],
+                        "attributes": {},
+                    }
+                )
+                deq_out = f"{p}_mm_f32"
+                nodes.append(
+                    {
+                        "name": f"{p}_scale_logits",
+                        "op_type": "Mul",
+                        "inputs": [mm_f32_raw, xw_scale],
+                        "outputs": [deq_out],
+                        "attributes": {},
+                    }
+                )
+                nodes.append(
+                    {
+                        "name": f"{p}_add_bias",
+                        "op_type": "Add",
+                        "inputs": [deq_out, f"{p}_bias"],
+                        "outputs": ["logits"],
+                        "attributes": {},
+                    }
+                )
 
     return {
         "format": "onnx-graph-json/v1",
@@ -470,6 +613,28 @@ def evaluate_quantized_graph(graph_spec: dict[str, Any], x: np.ndarray) -> np.nd
             res = np.clip(np.rint(acc_i32.astype(np.float32) * eff_scale) + y_zp.astype(np.float32), -128, 127).astype(
                 y_zp.dtype
             )
+        elif op == "MatMulInteger":
+            a = ins[0].astype(np.int32)
+            b = ins[1].astype(np.int32)
+            a_zp = ins[2].astype(np.int32) if len(ins) >= 3 else np.int32(0)
+            b_zp = ins[3].astype(np.int32) if len(ins) >= 4 else np.int32(0)
+            res = np.matmul(a - a_zp, b - b_zp).astype(np.int32)
+        elif op == "Cast":
+            to_code = int(attrs.get("to", ONNX_FLOAT))
+            if to_code == ONNX_FLOAT:
+                res = ins[0].astype(np.float32)
+            elif to_code == ONNX_INT32:
+                res = ins[0].astype(np.int32)
+            elif to_code == ONNX_INT64:
+                res = ins[0].astype(np.int64)
+            elif to_code == ONNX_INT8:
+                res = ins[0].astype(np.int8)
+            elif to_code == ONNX_UINT8:
+                res = ins[0].astype(np.uint8)
+            else:
+                raise ValueError(f"Unsupported Cast target dtype code {to_code} in evaluate_quantized_graph.")
+        elif op == "Mul":
+            res = (ins[0].astype(np.float32) * ins[1].astype(np.float32)).astype(np.float32)
         elif op == "MatMul":
             res = np.matmul(ins[0].astype(np.float32), ins[1].astype(np.float32)).astype(np.float32)
         elif op == "Add":

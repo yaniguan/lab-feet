@@ -2,8 +2,9 @@
 
 Inspired by microcontroller edge safety monitors and low-bit quantization saturation
 drift threads. Implements an integer-only `int4`/`int8` benchtop sensor classifier
-paired with an SRAM-tiny (`220 B < 512 B`) integer `L1` feature-Mahalanobis + `int4`
-saturation-clip + activation-energy margin monitor that triggers deterministic
+paired with an integer `L1` feature-Mahalanobis + `int4` saturation-clip + activation-energy
+margin monitor (`220 B` @ `24` features, `276 B` @ `32` features, `948 B` @ `128` features for
+`6` classes; `< 512 B` MCU budget up to `61` features @ `6` classes) that triggers deterministic
 `SAFE_HOLD` abstention when benchtop vibration/optical sensors drift out-of-distribution
 instead of emitting overconfident clipped predictions.
 """
@@ -189,7 +190,12 @@ def _quantize_symmetric_int4_per_channel(w_fp32: np.ndarray) -> tuple[np.ndarray
 
 
 class DriftAbstainingInt4Classifier:
-    """Integer-only `int8`-input / `int4`-weight+activation MLP with `< 512 B` OOD monitor."""
+    """Integer-only `int8`-input / `int4`-weight+activation MLP with integer OOD monitor.
+
+    Monitor SRAM table footprint (`extra_sram_bytes`) for `C` classes and `d` features is
+    `(C + 1) * d + 2 * C + 40` bytes (`220 B` @ `d=24, C=6`; `276 B` @ `d=32, C=6`;
+    `948 B` @ `d=128, C=6`).
+    """
 
     def __init__(self, n_features: int = 24, n_hidden: int = 32, n_classes: int = 6) -> None:
         if n_features < 1 or n_hidden < 1 or n_classes < 2:
@@ -214,8 +220,10 @@ class DriftAbstainingInt4Classifier:
         self.w2_packed: np.ndarray = np.zeros((self.n_hidden * self.n_classes + 1) // 2, dtype=np.uint8)
         self.b2_i32: np.ndarray = np.zeros(self.n_classes, dtype=np.int32)
         self.logit_mult_i16: np.ndarray = np.ones(self.n_classes, dtype=np.int16)
+        self.logit_scale: float = 1.0 / 16.0
+        self.react_clip_h1: int = 6
 
-        # Compact `< 512 B` SRAM OOD + saturation monitor state (exact integer tables)
+        # Integer SRAM OOD + saturation monitor state (`(C + 1)*d + 2*C + 40` B total with 32 B scratch)
         self.class_centroids_i8: np.ndarray = np.zeros((self.n_classes, self.n_features), dtype=np.int8)
         self.inv_mad_u8: np.ndarray = np.ones(self.n_features, dtype=np.uint8)
         self.class_l1_thresh_u16: np.ndarray = np.zeros(self.n_classes, dtype=np.uint16)
@@ -357,6 +365,31 @@ class DriftAbstainingInt4Classifier:
         self.logit_mult_i16 = np.clip(
             np.rint((w2_scales.astype(np.float64) / max_w2_scale) * 256.0), 1, 32767
         ).astype(np.int16)
+        # Physical float32 logit step per unit of `logits_i32` (`acc2 * (w2_s/max_w2_s * 256) >> 4`)
+        self.logit_scale = float(act_step * max_w2_scale / 16.0)
+
+        # Calibrate ReAct hidden-activation clipping ceiling (90th percentile of positive h1 on X_cal)
+        if x_calib.shape[0] > 0:
+            x_cal_q_batch, _ = self._quantize_input_adc(x_calib)
+            w1_q_cal = unpack_signed_int4(self.w1_packed, self.n_features * self.n_hidden).reshape(
+                self.n_features, self.n_hidden
+            )
+            dot1_cal = np.matmul(x_cal_q_batch.astype(np.int32), w1_q_cal.astype(np.int32))
+            acc1_cal = np.clip(
+                dot1_cal.astype(np.int64) + self.b1_i32.astype(np.int64)[None, :], INT32_MIN, INT32_MAX
+            ).astype(np.int32)
+            h1_cal_sat, _ = requantize_saturate_int64(
+                acc1_cal,
+                self.h1_requant_mult_i16[None, :],
+                self.h1_requant_shift,
+                0,
+                7,
+                rounding="half_up",
+            )
+            pos_h1 = h1_cal_sat[h1_cal_sat > 0]
+            self.react_clip_h1 = int(np.clip(np.rint(np.percentile(pos_h1, 90.0)), 1, 7)) if pos_h1.size > 0 else 5
+        else:
+            self.react_clip_h1 = 5
 
         # Calibrate integer L1-Mahalanobis + int4 saturation monitor strictly on `x_calib`
         x_cal_q, _ = self._quantize_input_adc(x_calib)
@@ -479,6 +512,72 @@ class DriftAbstainingInt4Classifier:
         l1_dist = self._compute_class_l1(x_q, pred_class)
         return pred_class, l1_dist, int4_clips, in_clips, energy_margin, peak_logit
 
+    def predict_int4_logits(
+        self,
+        x: np.ndarray,
+        *,
+        dequantize: bool = True,
+        react_rectify: bool = False,
+    ) -> np.ndarray:
+        """Return integer (`int32`) or calibrated float32 (`dequantize=True`) logits of the int4 student.
+
+        Supports both 1D single samples `(n_features,)` -> `(n_classes,)` and 2D batches
+        `(N, n_features)` -> `(N, n_classes)`. When `react_rectify=True`, clamps penultimate `int4`
+        activations at `self.react_clip_h1` (`ReAct`, Sun et al., NeurIPS 2021) prior to Layer 2.
+        """
+        arr = np.asarray(x, dtype=np.float64)
+        squeeze = arr.ndim == 1
+        if squeeze:
+            arr2d = arr.reshape(1, -1)
+        elif arr.ndim == 2:
+            arr2d = arr
+        else:
+            raise ValueError(f"Expected 1D or 2D input array, got shape {arr.shape}.")
+        if arr2d.shape[1] != self.n_features:
+            raise ValueError(f"Expected {self.n_features} input features, got {arr2d.shape[1]}.")
+
+        x_q, _ = self._quantize_input_adc(arr2d)
+        w1_q = unpack_signed_int4(self.w1_packed, self.n_features * self.n_hidden).reshape(
+            self.n_features, self.n_hidden
+        )
+        w2_q = unpack_signed_int4(self.w2_packed, self.n_hidden * self.n_classes).reshape(
+            self.n_hidden, self.n_classes
+        )
+
+        dot1_i32 = np.matmul(x_q.astype(np.int32), w1_q.astype(np.int32))
+        acc1_i32 = np.clip(
+            dot1_i32.astype(np.int64) + self.b1_i32.astype(np.int64)[None, :], INT32_MIN, INT32_MAX
+        ).astype(np.int32)
+        h1_max = int(np.clip(self.react_clip_h1, 1, 7)) if react_rectify else 7
+        h1_sat_i64, _ = requantize_saturate_int64(
+            acc1_i32,
+            self.h1_requant_mult_i16[None, :],
+            self.h1_requant_shift,
+            0,
+            h1_max,
+            rounding="half_up",
+        )
+        h1_i4 = h1_sat_i64.astype(np.int8)
+
+        dot2_i32 = np.matmul(h1_i4.astype(np.int32), w2_q.astype(np.int32))
+        acc2_i32 = np.clip(
+            dot2_i32.astype(np.int64) + self.b2_i32.astype(np.int64)[None, :], INT32_MIN, INT32_MAX
+        ).astype(np.int32)
+        logits_sat_i64, _ = requantize_saturate_int64(
+            acc2_i32,
+            self.logit_mult_i16[None, :],
+            4,
+            INT32_MIN,
+            INT32_MAX,
+            rounding="half_up",
+        )
+        logits_i32 = logits_sat_i64.astype(np.int32)
+        if dequantize:
+            out = (logits_i32.astype(np.float64) * float(self.logit_scale)).astype(np.float32)
+        else:
+            out = logits_i32
+        return out[0] if squeeze else out
+
     def predict_naive_int4_argmax(self, x_1d: np.ndarray) -> EdgePrediction:
         """Baseline `int4` classifier emitting `argmax` blindly without drift/clip abstention."""
         pred_c, l1_d, h_clips, in_clips, margin, peak_logit = self._forward_integer_core(x_1d)
@@ -592,10 +691,10 @@ def _generate_ood_and_saturated_inputs(
 def run_benchmark(seed: int = 20261123) -> dict[str, Any]:
     """Run 400-sample edge benchmark (`240` in-domain test + `160` OOD/saturated drift inputs).
 
-    Compares `naive_int4_argmax` vs `drift_abstaining_int4`, reporting:
+    Compares `naive_int4_argmax` vs `drift_abstaining_int4` on a 24-feature, 6-class synthetic fixture:
       - `silent_ood_error_rate_pct` (fraction of OOD inputs that emit an unhalted class prediction)
       - `in_domain_accuracy_pct`
-      - `extra_sram_bytes` (`< 512 B`).
+      - `extra_sram_bytes` (`220 B` for 24 features, 6 classes; `< 512 B` MCU budget).
     """
     rng = np.random.default_rng(seed)
     n_features = 24
