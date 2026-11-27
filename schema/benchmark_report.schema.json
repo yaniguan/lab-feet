@@ -19,6 +19,12 @@
     "digits": {
       "$ref": "#/$defs/DigitsReport"
     },
+    "multiseed_digits": {
+      "anyOf": [
+        { "$ref": "#/$defs/MultiSeedDigitsReport" },
+        { "type": "null" }
+      ]
+    },
     "wetlab": {
       "type": ["object", "null"]
     },
@@ -53,8 +59,86 @@
         "p95_us": { "type": "number", "minimum": 0.0 },
         "p99_us": { "type": "number", "minimum": 0.0 },
         "iqr_us": { "type": "number", "minimum": 0.0 },
+        "timing_mode": {
+          "type": "string",
+          "enum": ["fp32", "dequantized_fp32", "integer_w8a8", "integer_w4a8", "integer_c99_sim"]
+        },
         "agreement_with_kl_fp32": { "type": ["number", "null"] },
         "training": { "type": ["object", "null"] }
+      }
+    },
+    "MultiSeedModelRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mean_val_acc",
+        "std_val_acc",
+        "mean_test_acc",
+        "std_test_acc",
+        "min_test_acc",
+        "max_test_acc",
+        "params",
+        "weight_bytes",
+        "per_seed_test_acc"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "mean_val_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "std_val_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "mean_test_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "std_test_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "min_test_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "max_test_acc": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "params": { "type": "integer", "minimum": 1 },
+        "weight_bytes": { "type": "integer", "minimum": 1 },
+        "per_seed_test_acc": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+        }
+      }
+    },
+    "MultiSeedDigitsReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark",
+        "split_protocol",
+        "n_seeds",
+        "seeds",
+        "temperature",
+        "alpha",
+        "kl_vs_same_trainer_ce",
+        "models"
+      ],
+      "properties": {
+        "benchmark": { "type": "string", "const": "sklearn_digits_multiseed" },
+        "split_protocol": { "type": "string" },
+        "n_seeds": { "type": "integer", "minimum": 1 },
+        "seeds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "temperature": { "type": "number", "exclusiveMinimum": 0.0 },
+        "alpha": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "kl_vs_same_trainer_ce": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["wins", "ties", "losses", "mean_test_acc_diff"],
+          "properties": {
+            "wins": { "type": "integer", "minimum": 0 },
+            "ties": { "type": "integer", "minimum": 0 },
+            "losses": { "type": "integer", "minimum": 0 },
+            "mean_test_acc_diff": { "type": "number" }
+          }
+        },
+        "models": {
+          "type": "array",
+          "minItems": 4,
+          "items": { "$ref": "#/$defs/MultiSeedModelRow" }
+        }
       }
     },
     "DigitsReport": {

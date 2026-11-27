@@ -23,8 +23,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install package and test dependencies
+        if: matrix.os != 'ubuntu-latest'
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Install package, test, and ONNX Runtime edge dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: python -m pip install --upgrade pip && pip install -e ".[dev,edge]"
       - name: Run unit tests
+        env:
+          LAB_FEET_REQUIRE_ORT: ${{ matrix.os == 'ubuntu-latest' && '1' || '0' }}
         run: pytest -q
       - name: Run distillation & quantization benchmark with threshold gates
         run: |

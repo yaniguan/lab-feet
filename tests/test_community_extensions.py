@@ -89,7 +89,9 @@ def test_issue_28_int64_requantization_no_wraparound_and_small_scale_bias_clamp(
     assert int(clf_tiny.b1_i32[1]) == -(1 << 31) + 1
 
 
-def test_issue_29_lean_formal_theorems_rounding_parity_and_5_gate_equivalence(tmp_path: Path) -> None:
+def test_issue_29_lean_formal_theorems_rounding_parity_and_5_gate_equivalence_on_synthetic_fixture(
+    tmp_path: Path,
+) -> None:
     # 1) Nearest-integer rounding offset eliminates -0.5 LSB truncation bias and stays within 1 LSB of ties-to-even
     sat_hu, raw_hu = requantize_saturate_int64(1, 1023, 10, -8, 7, rounding="half_up")
     assert int(raw_hu) == 1 and int(sat_hu) == 1
@@ -171,19 +173,32 @@ def test_issue_29_lean_formal_theorems_rounding_parity_and_5_gate_equivalence(tm
         assert "warning:" not in proc.stdout.lower() and "warning:" not in proc.stderr.lower()
 
 
-def test_monitor_extra_sram_strictly_below_512_bytes() -> None:
-    clf = DriftAbstainingInt4Classifier(n_features=24, n_hidden=32, n_classes=6)
-    assert clf.extra_sram_bytes < 512
-    assert clf.extra_sram_bytes == 220
+def test_monitor_extra_sram_footprints_24d_32d_128d() -> None:
+    clf_24 = DriftAbstainingInt4Classifier(n_features=24, n_hidden=32, n_classes=6)
+    clf_32 = DriftAbstainingInt4Classifier(n_features=32, n_hidden=24, n_classes=6)
+    clf_128 = DriftAbstainingInt4Classifier(n_features=128, n_hidden=32, n_classes=6)
+    assert clf_24.extra_sram_bytes == 220 and clf_24.extra_sram_bytes < 512
+    assert clf_32.extra_sram_bytes == 276 and clf_32.extra_sram_bytes < 512
+    assert clf_128.extra_sram_bytes == 948 and clf_128.extra_sram_bytes > 512
 
 
-def test_saturated_and_drifted_inputs_trigger_safe_hold() -> None:
+def test_saturated_and_drifted_inputs_trigger_safe_hold_on_synthetic_fixture() -> None:
     rng = np.random.default_rng(42)
     from community_extensions.drift_abstaining_int4 import _generate_benchtop_sensor_dataset
 
     x_all, y_all, _ = _generate_benchtop_sensor_dataset(rng, n_per_class=80)
     clf = DriftAbstainingInt4Classifier()
     clf.fit_and_calibrate(x_all[:360], y_all[:360], x_all[360:], y_all[360:], seed=42)
+
+    # Verify predict_int4_logits matches naive argmax 100% across calibration samples
+    logits_batch = clf.predict_int4_logits(x_all[360:400], dequantize=True)
+    assert logits_batch.shape == (40, 6)
+    for i in range(40):
+        assert int(np.argmax(logits_batch[i])) == clf.predict_naive_int4_argmax(x_all[360 + i]).class_id
+        assert np.allclose(clf.predict_int4_logits(x_all[360 + i]), logits_batch[i], atol=1e-6)
+
+    react_logits = clf.predict_int4_logits(x_all[360:400], dequantize=True, react_rectify=True)
+    assert react_logits.shape == (40, 6) and np.all(np.isfinite(react_logits))
 
     # Saturated optical glare input (+15 across all channels)
     saturated = np.full(24, 15.0, dtype=np.float64)
@@ -198,7 +213,7 @@ def test_saturated_and_drifted_inputs_trigger_safe_hold() -> None:
     assert safe_pred.int4_clip_count > 0
 
 
-def test_benchmark_400_edge_inputs_accuracy_and_ood_abstention() -> None:
+def test_benchmark_400_synthetic_fixture_edge_inputs_accuracy_and_ood_abstention() -> None:
     report = run_benchmark()
     assert report["n_total_inputs"] == 400
     assert report["n_in_domain_inputs"] == 240

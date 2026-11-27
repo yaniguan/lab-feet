@@ -21,6 +21,7 @@ for _var in (
 from .benchmarks import (  # noqa: E402
     run_autoencoder_compression_benchmark,
     run_digits_benchmark,
+    run_digits_multiseed_benchmark,
     run_wetlab_acoustic_benchmark,
 )
 from .export_c import export_c99_header  # noqa: E402
@@ -35,7 +36,7 @@ def format_digits_report(digits: dict[str, Any]) -> str:
     tc = digits["timing_config"]
     bver = digits["binary_container_verification"]
     lines = [
-        f"CPU: {digits['cpu']}",
+        f"CPU: {digits['cpu']} (seed {digits['seed']})",
         f"train={sp['train']} val={sp['val']} test={sp['test']} features={sp['features']}",
         f"teacher soft probs softmax(logits/T): mean max prob = {digits['teacher_mean_max_soft_prob']:.4f}",
         f"distillation temperature T={digits['temperature']} (hybrid KL T^2 weight={1.0 - digits['alpha']:.2f}, CE alpha={digits['alpha']:.2f})",
@@ -43,14 +44,14 @@ def format_digits_report(digits: dict[str, Any]) -> str:
         "",
     ]
     hdr = (
-        f"{'model':<31}{'val_acc':>8}{'test_acc':>9}{'params':>8}"
+        f"{'model':<47}{'val_acc':>8}{'test_acc':>9}{'params':>8}"
         f"{'weight_bytes':>13}{'med_us':>8}{'p95_us':>8}{'p99_us':>8}{'iqr_us':>8}"
     )
     lines.append(hdr)
     lines.append("-" * len(hdr))
     for row in digits["models"]:
         lines.append(
-            f"{row['name']:<31}{row['val_acc']:>8.4f}{row['test_acc']:>9.4f}"
+            f"{row['name']:<47}{row['val_acc']:>8.4f}{row['test_acc']:>9.4f}"
             f"{row['params']:>8d}{row['weight_bytes']:>13d}"
             f"{row['median_us']:>8.2f}{row['p95_us']:>8.2f}"
             f"{row['p99_us']:>8.2f}{row['iqr_us']:>8.2f}"
@@ -58,25 +59,49 @@ def format_digits_report(digits: dict[str, Any]) -> str:
 
     lines.append("")
     by_name = {r["name"]: r for r in digits["models"]}
-    ag8 = by_name["student KL int8 (per-tensor)"]["agreement_with_kl_fp32"]
+    ag8 = by_name["student KL int8 pt (dequantized fp32 timing)"]["agreement_with_kl_fp32"]
     ag_w8a8 = by_name["student KL int8 W8A8 (int32)"]["agreement_with_kl_fp32"]
-    ag4_pt = by_name["student KL 4-bit (per-tensor)"]["agreement_with_kl_fp32"]
-    ag4_mse = by_name["student KL 4-bit (pc+MSE-clip)"]["agreement_with_kl_fp32"]
+    ag4_w4a8 = by_name["student KL 4-bit W4A8 (int32)"]["agreement_with_kl_fp32"]
+    ag4_wht = by_name["student KL 4-bit WHT+GPTQ W4A8 (int32)"]["agreement_with_kl_fp32"]
     lines.append(
-        f"prediction agreement with KL fp32 student: int8={ag8:.4f} W8A8={ag_w8a8:.4f} "
-        f"4bit-pt={ag4_pt:.4f} 4bit-pc+MSE={ag4_mse:.4f}"
+        f"prediction agreement with KL fp32 student: int8-deq={ag8:.4f} W8A8={ag_w8a8:.4f} "
+        f"4bit-W4A8={ag4_w4a8:.4f} 4bit-WHT+GPTQ={ag4_wht:.4f}"
     )
     lines.append(
         f"LFT1 binary verification: payload={bver['payload_weight_bytes']} B + "
         f"header={bver['header_bytes']} B = {bver['total_blob_bytes']} B total"
     )
     t_tr = by_name["teacher (256,256) fp32"]["training"]
-    h_tr = by_name["student hard-label fp32"]["training"]
+    h_tr = by_name["sklearn MLPClassifier hard-label"]["training"]
+    c_tr = by_name["student same-trainer CE fp32"]["training"]
     k_tr = by_name["student hybrid KL(T^2)+CE fp32"]["training"]
     lines.append(
         f"convergence: teacher(iter={t_tr['n_iter']}, loss={t_tr['final_loss']:.4f}, ok={t_tr['converged']}) | "
-        f"hard(iter={h_tr['n_iter']}, loss={h_tr['final_loss']:.4f}, ok={h_tr['converged']}) | "
-        f"KL+CE(epochs={k_tr['n_iter']}, loss={k_tr['final_loss']:.4f})"
+        f"sklearn-hard(iter={h_tr['n_iter']}, loss={h_tr['final_loss']:.4f}, ok={h_tr['converged']}) | "
+        f"same-trainer-CE(epochs={c_tr['n_iter']}, loss={c_tr['final_loss']:.4f}, ok={c_tr['converged']}) | "
+        f"KL+CE(epochs={k_tr['n_iter']}, loss={k_tr['final_loss']:.4f}, ok={k_tr['converged']})"
+    )
+    return "\n".join(lines)
+
+
+def format_multiseed_digits_report(ms: dict[str, Any]) -> str:
+    cmp = ms["kl_vs_same_trainer_ce"]
+    lines = [
+        "",
+        f"=== Multi-Seed Digits Comparison ({ms['n_seeds']} split-and-init seeds 0..{ms['n_seeds'] - 1}, "
+        f"T={ms['temperature']}, alpha={ms['alpha']}) ===",
+        f"{'model':<42}{'val_acc (mean +- std)':>24}{'test_acc (mean +- std)':>25}{'range':>17}",
+        "-" * 108,
+    ]
+    for row in ms["models"]:
+        val_str = f"{row['mean_val_acc']:.4f} +- {row['std_val_acc']:.4f}"
+        te_str = f"{row['mean_test_acc']:.4f} +- {row['std_test_acc']:.4f}"
+        rng_str = f"[{row['min_test_acc']:.4f}, {row['max_test_acc']:.4f}]"
+        lines.append(f"{row['name']:<42}{val_str:>24}{te_str:>25}{rng_str:>17}")
+    lines.append(
+        f"KL+CE vs same-trainer CE (win / tie / loss over {ms['n_seeds']} seeds): "
+        f"{cmp['wins']} / {cmp['ties']} / {cmp['losses']} "
+        f"(mean test_acc diff = {cmp['mean_test_acc_diff']:+.4f})"
     )
     return "\n".join(lines)
 
@@ -84,17 +109,17 @@ def format_digits_report(digits: dict[str, Any]) -> str:
 def format_wetlab_and_ae_report(wetlab: dict[str, Any], ae: dict[str, Any]) -> str:
     lines = [
         "",
-        "=== Wet-Lab Instrument Spectral Regime Distillation (6 classes, 48 mel features) ===",
+        "=== Synthetic Wet-Lab Toy Regime Distillation (6 classes, 48 i.i.d. Gaussian features) ===",
     ]
     for row in wetlab["models"]:
         lines.append(
-            f"  {row['name']:<32} val={row['val_acc']:.4f} test={row['test_acc']:.4f} "
+            f"  {row['name']:<52} val={row['val_acc']:.4f} test={row['test_acc']:.4f} "
             f"bytes={row['weight_bytes']:>6d} med_us={row['median_us']:>6.2f}"
         )
     lines.extend(
         [
             "",
-            f"=== lab-ears Autoencoder Compression ({ae['architecture']}) ===",
+            f"=== Synthetic lab-ears 8-D Subspace Autoencoder Compression ({ae['architecture']}) ===",
             f"  params={ae['params']} fp32={ae['fp32_bytes']} B -> int8={ae['int8_bytes']} B -> "
             f"4-bit={ae['int4_bytes']} B ({ae['compression_ratio_4bit']:.2f}x compression) "
             f"4-bit anomaly AUROC={ae['int4_anomaly_auroc']:.4f}",
@@ -106,9 +131,9 @@ def format_wetlab_and_ae_report(wetlab: dict[str, Any], ae: dict[str, Any]) -> s
 def check_thresholds(digits: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     by_name = {r["name"]: r for r in digits["models"]}
-    int8_acc = by_name["student KL int8 (per-tensor)"]["test_acc"]
+    int8_acc = by_name["student KL int8 pt (dequantized fp32 timing)"]["test_acc"]
     w8a8_acc = by_name["student KL int8 W8A8 (int32)"]["test_acc"]
-    int4_agree = by_name["student KL 4-bit (pc+MSE-clip)"]["agreement_with_kl_fp32"]
+    int4_agree = by_name["student KL 4-bit pc+MSE (dequantized fp32 timing)"]["agreement_with_kl_fp32"]
     if int8_acc < 0.95:
         failures.append(f"int8 test_acc {int8_acc:.4f} < 0.95 threshold")
     if w8a8_acc < 0.95:
@@ -127,6 +152,11 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
     artifacts = digits_raw.pop("_artifacts")
     print(format_digits_report(digits_raw))
 
+    multiseed_report = None
+    if args.seeds is not None:
+        multiseed_report = run_digits_multiseed_benchmark(n_seeds=args.seeds)
+        print(format_multiseed_digits_report(multiseed_report))
+
     wetlab = None
     ae = None
     if not args.digits_only:
@@ -141,12 +171,14 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
     if args.json_out:
         out = Path(args.json_out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
+        payload: dict[str, Any] = {
             "schema_version": "1.0.0",
             "digits": digits_raw,
             "wetlab": wetlab,
             "autoencoder": ae,
         }
+        if multiseed_report is not None:
+            payload["multiseed_digits"] = multiseed_report
         out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote JSON benchmark report to {out}")
 
@@ -234,6 +266,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bench = sub.add_parser("benchmark", help="Run distillation and quantization benchmarks")
     p_bench.add_argument("--seed", type=int, default=0)
+    p_bench.add_argument(
+        "--seeds",
+        type=int,
+        default=None,
+        help="Optional number of split-and-init seeds N (e.g. 10) for multi-seed digits evaluation.",
+    )
     p_bench.add_argument("--n-warmup", type=int, default=200)
     p_bench.add_argument("--n-timing", type=int, default=2000)
     p_bench.add_argument("--digits-only", action="store_true")

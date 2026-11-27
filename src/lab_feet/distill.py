@@ -124,6 +124,9 @@ def distill_kl_student(
 
     step = 0
     best_val_score = -float("inf")
+    best_val_acc = -float("inf")
+    best_train_loss = float("inf")
+    last_improve_epoch = 0
     best_layers = [(W.copy(), b.copy()) for W, b in zip(Ws, bs)]
     final_loss = float("nan")
     L = len(Ws)
@@ -199,6 +202,9 @@ def distill_kl_student(
         cur_layers = [(W.copy(), b.copy()) for W, b in zip(Ws, bs)]
         if X_val is not None and y_val is not None:
             val_acc = accuracy(cur_layers, X_val, y_val)
+            if val_acc > best_val_acc + 1e-6:
+                best_val_acc = val_acc
+                last_improve_epoch = epoch
             # Tie-break equal validation accuracies in favor of lower validation CE loss
             val_logits = forward(cur_layers, X_val)
             val_ce = float(-np.mean(_log_softmax(val_logits)[np.arange(len(y_val)), y_val]))
@@ -207,10 +213,18 @@ def distill_kl_student(
                 best_val_score = score
                 best_layers = cur_layers
         else:
+            if final_loss < best_train_loss - 1e-3:
+                best_train_loss = final_loss
+                last_improve_epoch = epoch
             best_layers = cur_layers
+
+    # Converged iff training ran beyond the stagnation window and validation accuracy (or train loss)
+    # plateaued without improvement over the final `stagnation_window` epochs (#37).
+    stagnation_window = max(3, min(20, epochs // 10))
+    converged = bool(epochs > stagnation_window and (epochs - last_improve_epoch) >= stagnation_window)
 
     return best_layers, TrainingDiagnostics(
         n_iter=epochs,
         final_loss=float(final_loss),
-        converged=True,
+        converged=converged,
     )

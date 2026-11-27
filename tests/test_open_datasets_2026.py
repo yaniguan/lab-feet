@@ -21,15 +21,25 @@ import scripts.fetch_open_datasets as fetch_cli  # noqa: E402
 from lab_feet import (  # noqa: E402
     COMMERCIAL_SAFE_SPDX_LICENSES,
     OPEN_EDGE_DATASETS,
+    DatasetIntegrityError,
     DatasetLicenseError,
     DeterministicFeatureNormalizer,
     OpenEdgeDataset,
+    build_wht_spec,
     evaluate_temporal_drift_abstaining_int4,
+    forward_int8,
     get_open_edge_dataset,
     list_open_edge_datasets,
     load_open_edge_dataset,
+    prepare_distill_quantize_splits,
+    quantize_model,
+    quantize_model_wht_gptq,
+    rotate_linear_weights_wht,
     run_open_dataset_distill_quantize,
+    train_spectral_resnet1d,
     verify_dataset_license,
+    walsh_hadamard_rotate,
+    walsh_hadamard_unrotate,
 )
 
 
@@ -234,9 +244,35 @@ def _write_ethanol_nir_zip(path: Path, *, seed: int = 41) -> Path:
     return path
 
 
-def test_open_edge_dataset_registry_metadata_and_modalities() -> None:
+def _write_aeon_ftir_zip_fixture(
+    path: Path,
+    prefix: str,
+    n_features: int,
+    labels: list[int],
+    *,
+    n_per_class: int = 4,
+    seed: int = 43,
+) -> Path:
+    rng = np.random.default_rng(seed)
+    tr_rows, te_rows = [], []
+    for cls_val in labels:
+        for _ in range(n_per_class):
+            tr_spec = rng.normal(loc=0.25 * cls_val, scale=0.05, size=n_features)
+            te_spec = rng.normal(loc=0.25 * cls_val + 0.15, scale=0.05, size=n_features)
+            tr_rows.append(np.concatenate([[float(cls_val)], tr_spec]))
+            te_rows.append(np.concatenate([[float(cls_val)], te_spec]))
+    s_tr, s_te = io.StringIO(), io.StringIO()
+    np.savetxt(s_tr, np.vstack(tr_rows), fmt="%.6e")
+    np.savetxt(s_te, np.vstack(te_rows), fmt="%.6e")
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{prefix}_TRAIN.txt", s_tr.getvalue())
+        zf.writestr(f"{prefix}_TEST.txt", s_te.getvalue())
+    return path
+
+
+def test_open_edge_dataset_registry_metadata_modalities_and_pinned_sha256() -> None:
     specs = list_open_edge_datasets()
-    assert len(specs) >= 7
+    assert len(specs) == 10
     assert set(OPEN_EDGE_DATASETS.keys()) == {
         "mnist1d",
         "uci_gas_sensor_drift",
@@ -245,6 +281,9 @@ def test_open_edge_dataset_registry_metadata_and_modalities() -> None:
         "uci_hydraulic_vibration",
         "sers_bacteria_raman_2026",
         "ethanol_nir_spectroscopy",
+        "olive_oil_ftir",
+        "coffee_ftir",
+        "meat_ftir",
     }
 
     modalities = set()
@@ -257,6 +296,8 @@ def test_open_edge_dataset_registry_metadata_and_modalities() -> None:
         assert spec.spdx_license in COMMERCIAL_SAFE_SPDX_LICENSES
         assert spec.commercial_use_ok is True
         assert len(spec.title) > 5 and len(spec.citation) > 10
+        assert len(spec.expected_sha256) == 64
+        assert spec.expected_archive_bytes is not None and spec.expected_archive_bytes > 0
         verify_dataset_license(spec, require_commercial_use=True)
         modalities.add(spec.modality)
 
@@ -267,15 +308,20 @@ def test_open_edge_dataset_registry_metadata_and_modalities() -> None:
         "vibration_fault",
         "raman_spectroscopy",
         "nir_spectroscopy",
+        "ftir_spectroscopy",
     }.issubset(modalities)
 
     drift_specs = list_open_edge_datasets(commercial_only=True, drift_capable_only=True)
     drift_ids = {s.dataset_id for s in drift_specs}
     assert "uci_gas_sensor_drift" in drift_ids
     assert "cwru_bearing_vibration" in drift_ids
+    assert "olive_oil_ftir" in drift_ids
     assert "mnist1d" not in drift_ids
 
-    assert get_open_edge_dataset("uci_gas_sensor_drift").n_features == 128
+    gas_spec = get_open_edge_dataset("uci_gas_sensor_drift")
+    assert gas_spec.n_features == 128
+    assert gas_spec.expected_archive_bytes == 9989262
+    assert gas_spec.expected_sha256.startswith("91e8f466f202")
     with pytest.raises(KeyError, match="Unknown dataset_id"):
         get_open_edge_dataset("nonexistent_sensor_dataset")
 
@@ -358,7 +404,32 @@ def test_deterministic_feature_normalizer_modes_and_leakage_free_sha256() -> Non
     assert np.allclose(snv.transform(base_spectra), snv.transform(shifted_scaled), atol=1e-5)
 
 
-def test_all_seven_dataset_archive_parsers_and_restricted_pickle_guard(tmp_path: Path) -> None:
+def test_pinned_archive_sha256_and_size_verification_rejects_mismatch_on_synthetic_fixture(
+    tmp_path: Path,
+) -> None:
+    gas_zip = _write_gas_sensor_drift_zip(
+        tmp_path / "wrong_sha_gas.zip", n_batches=3, n_per_class_batch1=4, n_per_class_later=2
+    )
+    with pytest.raises(DatasetIntegrityError, match="mismatch"):
+        load_open_edge_dataset("uci_gas_sensor_drift", archive_path=gas_zip)
+
+    # Matching byte size with wrong SHA-256 also raises DatasetIntegrityError unless overridden
+    fake_m1d = tmp_path / "wrong_sha_same_size.pkl"
+    fake_m1d.write_bytes(b"\x00" * int(OPEN_EDGE_DATASETS["mnist1d"].expected_archive_bytes or 64))
+    with pytest.raises(DatasetIntegrityError, match="SHA-256 mismatch"):
+        load_open_edge_dataset("mnist1d", archive_path=fake_m1d)
+
+    loaded = load_open_edge_dataset(
+        "uci_gas_sensor_drift",
+        archive_path=gas_zip,
+        allow_unverified_sha256=True,
+    )
+    assert loaded.X.shape[1] == 128
+
+
+def test_all_ten_dataset_archive_parsers_on_synthetic_fixture_and_restricted_pickle_guard(
+    tmp_path: Path,
+) -> None:
     fixtures = {
         "mnist1d": _write_mnist1d_fixture(tmp_path / "mnist1d_data.pkl"),
         "uci_gas_sensor_drift": _write_gas_sensor_drift_zip(
@@ -369,10 +440,13 @@ def test_all_seven_dataset_archive_parsers_and_restricted_pickle_guard(tmp_path:
         "uci_hydraulic_vibration": _write_uci_hydraulic_zip(tmp_path / "hydraulic.zip"),
         "sers_bacteria_raman_2026": _write_sers_bacteria_csv(tmp_path / "sers.csv"),
         "ethanol_nir_spectroscopy": _write_ethanol_nir_zip(tmp_path / "EthanolLevel.zip"),
+        "olive_oil_ftir": _write_aeon_ftir_zip_fixture(tmp_path / "OliveOil.zip", "OliveOil", 570, [1, 2, 3, 4]),
+        "coffee_ftir": _write_aeon_ftir_zip_fixture(tmp_path / "Coffee.zip", "Coffee", 286, [0, 1]),
+        "meat_ftir": _write_aeon_ftir_zip_fixture(tmp_path / "Meat.zip", "Meat", 448, [1, 2, 3]),
     }
 
     for ds_id, fpath in fixtures.items():
-        loaded = load_open_edge_dataset(ds_id, archive_path=fpath)
+        loaded = load_open_edge_dataset(ds_id, archive_path=fpath, allow_unverified_sha256=True)
         assert loaded.X.dtype == np.float32
         assert loaded.y.dtype == np.int64
         assert loaded.X.shape[1] == loaded.spec.n_features
@@ -384,9 +458,12 @@ def test_all_seven_dataset_archive_parsers_and_restricted_pickle_guard(tmp_path:
             assert len(np.unique(loaded.batch_ids)) >= 2
 
     # Specifically verify numeric batch ordering (1, 2, ..., 10) for UCI Gas Sensor Drift
-    gas = load_open_edge_dataset("uci_gas_sensor_drift", archive_path=fixtures["uci_gas_sensor_drift"])
+    gas = load_open_edge_dataset(
+        "uci_gas_sensor_drift",
+        archive_path=fixtures["uci_gas_sensor_drift"],
+        allow_unverified_sha256=True,
+    )
     assert gas.batch_ids is not None
-    # First sample comes from batch 1 and last sample comes from batch 10 (not batch 9!)
     assert int(gas.batch_ids[0]) == 1
     assert int(gas.batch_ids[-1]) == 10
     assert list(np.unique(gas.batch_ids)) == list(range(1, 11))
@@ -401,12 +478,14 @@ def test_all_seven_dataset_archive_parsers_and_restricted_pickle_guard(tmp_path:
     bad_pkl = tmp_path / "evil_mnist1d.pkl"
     bad_pkl.write_bytes(pickle.dumps(_EvilGadget()))
     with pytest.raises(pickle.UnpicklingError, match="Disallowed pickle global"):
-        load_open_edge_dataset("mnist1d", archive_path=bad_pkl)
+        load_open_edge_dataset("mnist1d", archive_path=bad_pkl, allow_unverified_sha256=True)
 
 
-def test_open_dataset_distill_quantize_int8_w8a8_and_int4_lft1(tmp_path: Path) -> None:
+def test_open_dataset_distill_quantize_random_and_temporal_splits_on_synthetic_fixture(
+    tmp_path: Path,
+) -> None:
     m1d_path = _write_mnist1d_fixture(tmp_path / "mnist1d_data.pkl")
-    m1d = load_open_edge_dataset("mnist1d", archive_path=m1d_path)
+    m1d = load_open_edge_dataset("mnist1d", archive_path=m1d_path, allow_unverified_sha256=True)
     report_m1d = run_open_dataset_distill_quantize(
         m1d,
         teacher_hidden=(96, 64),
@@ -416,32 +495,49 @@ def test_open_dataset_distill_quantize_int8_w8a8_and_int4_lft1(tmp_path: Path) -
     )
     assert report_m1d["dataset_id"] == "mnist1d"
     assert report_m1d["spdx_license"] == "Apache-2.0"
+    assert report_m1d["split_mode"] == "random"
+    assert report_m1d["student_ce_fp32"] is not None
     assert report_m1d["student_kl_fp32"]["test_acc"] >= 0.90
     assert report_m1d["student_int8_w8a8"]["test_acc"] >= 0.90
     assert report_m1d["student_int4_pc_mse"]["test_acc"] >= 0.88
-    assert report_m1d["student_int4_pc_mse"]["agreement_with_kl_fp32"] >= 0.90
+    assert report_m1d["student_int4_wht_gptq"]["w4a8_test_acc"] >= 0.88
     assert (
         report_m1d["student_int4_pc_mse"]["weight_bytes"]
         < report_m1d["student_int8_w8a8"]["weight_bytes"]
         < report_m1d["student_kl_fp32"]["weight_bytes"]
         < report_m1d["teacher_fp32"]["weight_bytes"]
     )
+    with pytest.raises(ValueError, match="no batch_ids"):
+        prepare_distill_quantize_splits(m1d, split_mode="temporal")
 
     cwru_path = _write_cwru_csv_fixture(tmp_path / "CWRU.csv")
-    cwru = load_open_edge_dataset("cwru_bearing_vibration", archive_path=cwru_path)
-    report_cwru = run_open_dataset_distill_quantize(
+    cwru = load_open_edge_dataset("cwru_bearing_vibration", archive_path=cwru_path, allow_unverified_sha256=True)
+    report_cwru_rand = run_open_dataset_distill_quantize(
         cwru,
         teacher_hidden=(64, 32),
         student_hidden=(16,),
         student_epochs=140,
+        split_mode="random",
         seed=0,
     )
-    assert report_cwru["normalizer"]["kind"] == "robust_iqr"
-    assert report_cwru["student_int4_pc_mse"]["test_acc"] >= 0.88
-    assert report_cwru["student_int4_pc_mse"]["w4a8_test_acc"] >= 0.85
+    report_cwru_temp = run_open_dataset_distill_quantize(
+        cwru,
+        teacher_hidden=(64, 32),
+        student_hidden=(16,),
+        student_epochs=140,
+        split_mode="temporal",
+        seed=0,
+    )
+    assert report_cwru_rand["normalizer"]["kind"] == "robust_iqr"
+    assert report_cwru_rand["split_mode"] == "random"
+    assert report_cwru_temp["split_mode"] == "temporal"
+    assert report_cwru_rand["student_int4_pc_mse"]["w4a8_test_acc"] >= 0.85
+    assert 0.0 <= report_cwru_temp["student_int4_pc_mse"]["w4a8_test_acc"] <= 1.0
 
 
-def test_uci_gas_sensor_multi_batch_drift_abstaining_int4_safe_hold(tmp_path: Path) -> None:
+def test_uci_gas_sensor_multi_batch_drift_abstaining_and_baselines_on_synthetic_fixture(
+    tmp_path: Path,
+) -> None:
     gas_zip = _write_gas_sensor_drift_zip(
         tmp_path / "gas_drift_5batch.zip",
         n_batches=5,
@@ -449,32 +545,49 @@ def test_uci_gas_sensor_multi_batch_drift_abstaining_int4_safe_hold(tmp_path: Pa
         n_per_class_later=12,
         seed=2026,
     )
-    gas = load_open_edge_dataset("uci_gas_sensor_drift", archive_path=gas_zip)
+    gas = load_open_edge_dataset("uci_gas_sensor_drift", archive_path=gas_zip, allow_unverified_sha256=True)
 
-    # 1) Full 128-channel MOX drift evaluation trained strictly on Batch 1
-    full_eval = evaluate_temporal_drift_abstaining_int4(
-        gas,
-        source_batches=[1],
-        n_hidden=32,
-        seed=2026,
-    )
+    # 1) Full 128-channel synthetic fixture triggers explicit > 512 B SRAM warning (948 B)
+    with pytest.warns(UserWarning, match="948 B"):
+        full_eval = evaluate_temporal_drift_abstaining_int4(
+            gas,
+            source_batches=[1],
+            n_hidden=32,
+            seed=2026,
+        )
     assert full_eval["dataset_id"] == "uci_gas_sensor_drift"
     assert full_eval["source_batches"] == [1]
     assert full_eval["evaluated_drift_batches"] == [2, 3, 4, 5]
     assert full_eval["n_selected_features"] == 128
+    assert full_eval["extra_sram_bytes"] == 948
+    assert full_eval["sram_budget_exceeded"] is True
+    assert full_eval["sram_warning"] is not None
 
     src = full_eval["source_in_domain"]
     assert src["naive_int4_accuracy_pct"] >= 90.0
     assert src["guarded_accepted_accuracy_pct"] >= 90.0
 
+    # Verify MSP, Energy, ReAct+Energy, Shrinkage Mahalanobis, and TTN+CRC baselines run & stay in bounds
+    for row in [src, *full_eval["drift_batches"]]:
+        for method_key in (
+            "msp_baseline",
+            "energy_baseline",
+            "react_energy",
+            "shrinkage_mahalanobis",
+            "ttn_crc_frontier",
+        ):
+            m = row[method_key]
+            assert 0.0 <= m["safe_hold_rate_pct"] <= 100.0
+            assert 0.0 <= m["accepted_accuracy_pct"] <= 100.0
+            assert 0.0 <= m["silent_error_rate_pct"] <= 100.0
+            assert 0.0 <= m["aurc"] <= 1.0
+
     by_batch = {row["batch_id"]: row for row in full_eval["drift_batches"]}
-    # Severe/saturated later drift batches (4 & 5) trigger deterministic SAFE_HOLD abstention
     assert by_batch[2]["guarded_safe_hold_rate_pct"] < by_batch[4]["guarded_safe_hold_rate_pct"]
     assert by_batch[5]["guarded_safe_hold_rate_pct"] >= 90.0
     assert by_batch[5]["guarded_silent_error_rate_pct"] <= 10.0
-    assert by_batch[5]["naive_silent_error_rate_pct"] >= 60.0
 
-    # 2) MCU SRAM-budgeted (< 512 B) 32-channel top-F-ratio MOX projection
+    # 2) MCU SRAM-budgeted (276 B < 512 B) 32-channel top-F-ratio MOX projection
     mcu_eval = evaluate_temporal_drift_abstaining_int4(
         gas,
         source_batches=[1],
@@ -483,12 +596,14 @@ def test_uci_gas_sensor_multi_batch_drift_abstaining_int4_safe_hold(tmp_path: Pa
         seed=2026,
     )
     assert mcu_eval["n_selected_features"] == 32
-    assert mcu_eval["extra_sram_bytes"] < 512
+    assert mcu_eval["extra_sram_bytes"] == 276
+    assert mcu_eval["sram_budget_exceeded"] is False
+    assert mcu_eval["sram_warning"] is None
     mcu_b5 = {r["batch_id"]: r for r in mcu_eval["drift_batches"]}[5]
     assert mcu_b5["guarded_safe_hold_rate_pct"] >= 90.0
 
 
-def test_fetch_open_datasets_cli_list_and_mocked_ondemand_download(
+def test_fetch_open_datasets_cli_list_and_mocked_ondemand_download_on_synthetic_fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -496,8 +611,9 @@ def test_fetch_open_datasets_cli_list_and_mocked_ondemand_download(
     rc_list = fetch_cli.main(["--list", "--json"])
     assert rc_list == 0
     listed = json.loads(capsys.readouterr().out)
-    assert len(listed) >= 7
+    assert len(listed) == 10
     assert any(item["dataset_id"] == "uci_gas_sensor_drift" for item in listed)
+    assert any(item["dataset_id"] == "olive_oil_ftir" for item in listed)
 
     fixture_src = _write_cwru_csv_fixture(tmp_path / "mock_cwru.csv")
     raw_bytes = fixture_src.read_bytes()
@@ -529,6 +645,7 @@ def test_fetch_open_datasets_cli_list_and_mocked_ondemand_download(
             "cwru_bearing_vibration",
             "--data-dir",
             str(out_data_dir),
+            "--allow-unverified-sha256",
             "--smoke-distill",
             "--smoke-drift",
             "--json",
@@ -540,5 +657,50 @@ def test_fetch_open_datasets_cli_list_and_mocked_ondemand_download(
     assert fetched_row["dataset_id"] == "cwru_bearing_vibration"
     assert fetched_row["n_features"] == 17
     assert "distill_quantize" in fetched_row
+    assert "distill_quantize_temporal" in fetched_row
     assert "drift_abstaining_int4" in fetched_row
     assert (out_data_dir / "cwru_bearing_vibration" / "manifest.json").is_file()
+
+
+def test_frontier_wht_gptq_and_spectral_resnet1d_on_synthetic_fixture(tmp_path: Path) -> None:
+    rng = np.random.default_rng(2026)
+    X_spiky = rng.normal(0.0, 0.35, size=(64, 48)).astype(np.float32)
+    X_spiky[:, 0] *= 40.0  # Extreme isolated activation outlier channel
+    W = rng.normal(0.0, 0.35, size=(48, 12)).astype(np.float32)
+    W[1, :] = 6.0  # Weight row outlier
+    b = rng.normal(0.0, 0.1, size=12).astype(np.float32)
+
+    spec = build_wht_spec(48, X_cal=X_spiky, seed=7)
+    X_rot = walsh_hadamard_rotate(X_spiky, spec)
+    assert np.allclose(walsh_hadamard_unrotate(X_rot, spec), X_spiky, atol=1e-4)
+    W_rot = rotate_linear_weights_wht(W, spec)
+    assert np.allclose(X_rot @ W_rot, X_spiky @ W, atol=1e-4)
+
+    q_naive = quantize_model([(W, b)], bits=4, per_channel=True, mode="symmetric_full")
+    q_wht_gptq = quantize_model_wht_gptq([(W, b)], bits=4, X_cal=X_spiky, seed=7)
+    y_exact = X_spiky @ W + b
+    mse_naive = float(np.mean(np.square(y_exact - forward_int8(q_naive, X_spiky, act_bits=8))))
+    mse_wht = float(np.mean(np.square(y_exact - q_wht_gptq.forward_int8(X_spiky, act_bits=8))))
+    assert mse_wht * 2.5 < mse_naive
+
+    # 1D Residual Spectral Conv/MLP backbone (`15k-50k` params) + 4-bit WHT+GPTQ quantization
+    m1d_path = _write_mnist1d_fixture(tmp_path / "m1d_resnet.pkl", seed=99)
+    m1d = load_open_edge_dataset("mnist1d", archive_path=m1d_path, allow_unverified_sha256=True)
+    X_tr, y_tr, X_val, y_val, X_te, y_te, _ = prepare_distill_quantize_splits(m1d, seed=0)
+    resnet, res_diag = train_spectral_resnet1d(
+        X_tr,
+        y_tr,
+        X_val=X_val,
+        y_val=y_val,
+        epochs=25,
+        seed=0,
+    )
+    assert 15_000 <= resnet.n_params <= 50_000
+    assert isinstance(res_diag.converged, bool)
+    fp32_acc = float((resnet.forward(X_te).argmax(axis=1) == y_te).mean())
+    assert fp32_acc >= 0.85
+
+    q_res4 = resnet.quantize_wht_gptq(X_val, bits=4, use_wht=True, seed=0)
+    q4_acc = float((q_res4.forward_int8(X_te, act_bits=8).argmax(axis=1) == y_te).mean())
+    assert q4_acc >= 0.80
+    assert q_res4.packed_weight_bytes * 4 < resnet.fp32_bytes

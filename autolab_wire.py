@@ -57,6 +57,8 @@ SAFE_HOLD_LABEL: str = str(_DRIFT_MOD.SAFE_HOLD_LABEL)
 
 _N_FEATURES = 24
 _N_HIDDEN = 16
+DEFAULT_MAX_ACC_DROP_PERMILLE = 15
+DEFAULT_MIN_CAL_ACC_PERMILLE = 700
 
 
 def compute_checkpoint_sha256(model_or_lft1: QuantizedModel | bytes | bytearray | memoryview) -> str:
@@ -72,10 +74,12 @@ def compute_calibration_sha256(X_cal: np.ndarray, y_cal: np.ndarray) -> str:
     """Compute canonical SHA-256 hex digest over little-endian `<f4` calibration features and `<i8` labels."""
     x_le = np.ascontiguousarray(X_cal, dtype="<f4")
     y_le = np.ascontiguousarray(y_cal, dtype="<i8").reshape(-1)
-    if x_le.ndim != 2 or x_le.shape[0] != y_le.shape[0]:
+    if x_le.ndim != 2 or x_le.shape[0] < 1 or x_le.shape[1] < 1 or x_le.shape[0] != y_le.shape[0]:
         raise ValueError(
-            f"Calibration X_cal {x_le.shape} and y_cal {y_le.shape} must be aligned 2D/1D arrays."
+            f"Calibration X_cal {x_le.shape} and y_cal {y_le.shape} must be non-empty aligned 2D/1D arrays."
         )
+    if not np.all(np.isfinite(x_le)):
+        raise ValueError("Calibration X_cal contains NaN or infinite values.")
     h = hashlib.sha256()
     h.update(b"LFCAL1")
     h.update(struct.pack("<II", int(x_le.shape[0]), int(x_le.shape[1])))
@@ -139,6 +143,27 @@ def _derive_sensor_features(
     return vec
 
 
+def _measure_calibration_metrics_permille(
+    fp32_layers: list[tuple[np.ndarray, np.ndarray]],
+    qmodel_4bit: QuantizedModel,
+    X_cal: np.ndarray,
+    y_cal: np.ndarray,
+) -> tuple[int, int, int]:
+    """Measure `(drop_permille, fp32_acc_permille, int4_acc_permille)` on non-empty `(X_cal, y_cal)`."""
+    x_arr = np.asarray(X_cal, dtype=np.float32)
+    y_arr = np.asarray(y_cal, dtype=np.int64).reshape(-1)
+    if x_arr.ndim != 2 or y_arr.size < 1 or x_arr.shape[0] != y_arr.size:
+        raise ValueError("Calibration split must be a non-empty 2D X_cal aligned with y_cal.")
+    fp32_preds = forward(fp32_layers, x_arr, activation=qmodel_4bit.activation).argmax(axis=1)
+    int4_preds = forward_int8(qmodel_4bit, x_arr, act_bits=8).argmax(axis=1)
+    fp32_acc = float((fp32_preds == y_arr).mean())
+    int4_acc = float((int4_preds == y_arr).mean())
+    drop_permille = int(round(1000.0 * max(0.0, fp32_acc - int4_acc)))
+    fp32_acc_permille = int(round(1000.0 * fp32_acc))
+    int4_acc_permille = int(round(1000.0 * int4_acc))
+    return drop_permille, fp32_acc_permille, int4_acc_permille
+
+
 def _measure_calibration_drop_permille(
     fp32_layers: list[tuple[np.ndarray, np.ndarray]],
     qmodel_4bit: QuantizedModel,
@@ -146,14 +171,8 @@ def _measure_calibration_drop_permille(
     y_cal: np.ndarray,
 ) -> int:
     """Measure empirical accuracy drop (`1000 * max(0, fp32_acc - int4_acc)`) on `(X_cal, y_cal)`."""
-    y_arr = np.asarray(y_cal, dtype=np.int64).reshape(-1)
-    if y_arr.size == 0:
-        return 0
-    fp32_preds = forward(fp32_layers, X_cal, activation=qmodel_4bit.activation).argmax(axis=1)
-    int4_preds = forward_int8(qmodel_4bit, X_cal, act_bits=8).argmax(axis=1)
-    fp32_acc = float((fp32_preds == y_arr).mean())
-    int4_acc = float((int4_preds == y_arr).mean())
-    return int(round(1000.0 * max(0.0, fp32_acc - int4_acc)))
+    drop_permille, _, _ = _measure_calibration_metrics_permille(fp32_layers, qmodel_4bit, X_cal, y_cal)
+    return drop_permille
 
 
 def _build_ood_monitor_for_layers(
@@ -161,13 +180,17 @@ def _build_ood_monitor_for_layers(
     X_cal: np.ndarray,
     y_cal: np.ndarray,
 ) -> Any | None:
-    """Construct and calibrate `< 512 B` `DriftAbstainingInt4Classifier` when architecture is 2-layer."""
+    """Construct and calibrate `DriftAbstainingInt4Classifier` when architecture is a valid 2-layer MLP."""
     if len(layers_fp32) != 2:
         return None
     (w1, b1), (w2, b2) = layers_fp32
+    if w1.ndim != 2 or w2.ndim != 2:
+        return None
     d_in, d_hid = w1.shape
-    _, d_out = w2.shape
-    if d_out < 2 or X_cal.shape[1] != d_in:
+    d_hid_2, d_out = w2.shape
+    if d_hid != d_hid_2 or d_in < 1 or d_hid < 1 or d_out < 2:
+        return None
+    if X_cal.ndim != 2 or X_cal.shape[0] < 1 or X_cal.shape[1] != d_in:
         return None
     clf_cls = _DRIFT_MOD.DriftAbstainingInt4Classifier
     clf = clf_cls(n_features=int(d_in), n_hidden=int(d_hid), n_classes=int(d_out))
@@ -175,12 +198,6 @@ def _build_ood_monitor_for_layers(
     p995 = float(np.percentile(np.abs(X_cal), 99.5)) if X_cal.size > 0 else 2.5
     in_scale = max(p995 * 1.65 / 127.0, 0.04)
     clf.load_fp32_weights_and_calibrate(w1, b1, w2, b2, X_cal, y_cal, input_scale=in_scale, act_cap=4.5)
-    # Relax margin/peak floor slightly for arbitrary derived wire hashes while catching true OOD/glare spikes
-    clf.class_l1_thresh_u16[:] = np.minimum(
-        65535, (clf.class_l1_thresh_u16.astype(np.int32) * 2 + 280)
-    ).astype(np.uint16)
-    clf.scalar_thresholds_u16[2] = np.uint16(min(int(clf.scalar_thresholds_u16[2]), 2))
-    clf.scalar_thresholds_u16[3] = np.uint16(0)
     return clf
 
 
@@ -265,7 +282,9 @@ def _get_bench_monitor_bundle() -> dict[str, Any]:
     lft1_bytes = to_binary_buffer(qmodel_4bit)
     ckpt_sha256 = compute_checkpoint_sha256(lft1_bytes)
     cal_sha256 = compute_calibration_sha256(x_cal, y_cal)
-    measured_drop = _measure_calibration_drop_permille(fp32_layers, qmodel_4bit, x_cal, y_cal)
+    measured_drop, cal_fp32_acc, cal_int4_acc = _measure_calibration_metrics_permille(
+        fp32_layers, qmodel_4bit, x_cal, y_cal
+    )
     ood_clf = _build_ood_monitor_for_layers(fp32_layers, x_cal, y_cal)
 
     return {
@@ -278,6 +297,8 @@ def _get_bench_monitor_bundle() -> dict[str, Any]:
         "X_cal": x_cal,
         "y_cal": y_cal,
         "measured_drop_permille": measured_drop,
+        "cal_fp32_acc_permille": cal_fp32_acc,
+        "cal_int4_acc_permille": cal_int4_acc,
         "ood_clf": ood_clf,
         "source": "default_calibrated_monitor",
     }
@@ -455,24 +476,38 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
     merged_ckpt_meta: dict[str, Any] = {**posttrain, **distilled}
 
     # Parse optional calibration features & labels from packet metadata
+    has_x_cal_key = any(
+        k in merged_ckpt_meta or k in out for k in ("calibration_X", "X_cal")
+    )
+    has_y_cal_key = any(
+        k in merged_ckpt_meta or k in out for k in ("calibration_y", "y_cal")
+    )
     raw_x_cal = (
         merged_ckpt_meta.get("calibration_X")
         if "calibration_X" in merged_ckpt_meta
-        else merged_ckpt_meta.get("X_cal")
+        else (
+            merged_ckpt_meta.get("X_cal")
+            if "X_cal" in merged_ckpt_meta
+            else (out.get("calibration_X") if "calibration_X" in out else out.get("X_cal"))
+        )
     )
     raw_y_cal = (
         merged_ckpt_meta.get("calibration_y")
         if "calibration_y" in merged_ckpt_meta
-        else merged_ckpt_meta.get("y_cal")
+        else (
+            merged_ckpt_meta.get("y_cal")
+            if "y_cal" in merged_ckpt_meta
+            else (out.get("calibration_y") if "calibration_y" in out else out.get("y_cal"))
+        )
     )
     supplied_x_cal: np.ndarray | None = None
     supplied_y_cal: np.ndarray | None = None
-    if raw_x_cal is not None or raw_y_cal is not None:
+    if has_x_cal_key or has_y_cal_key or raw_x_cal is not None or raw_y_cal is not None:
         if raw_x_cal is None or raw_y_cal is None:
             return _record_halt_and_return(
                 out,
-                "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
-                "incomplete calibration split (require both calibration_X and calibration_y)",
+                "L0_FEET_CALIBRATION_REQUIRED",
+                "incomplete calibration split (require both non-empty calibration_X and calibration_y)",
             )
         try:
             supplied_x_cal = np.asarray(raw_x_cal, dtype=np.float32)
@@ -481,8 +516,8 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             return _record_halt_and_return(
                 out,
-                "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
-                f"invalid calibration arrays: {exc}",
+                "L0_FEET_CALIBRATION_REQUIRED",
+                f"invalid or empty calibration split: {exc}",
             )
     else:
         supplied_cal_sha256 = None
@@ -523,38 +558,40 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
         fp32_layers = hot_fp32_override if hot_fp32_override is not None else deq_layers
         checkpoint_source = "hotloaded_student"
 
-        if supplied_x_cal is not None and supplied_y_cal is not None:
-            actual_cal_sha = supplied_cal_sha256
-            if expected_cal_sha is not None and actual_cal_sha != str(expected_cal_sha).strip().lower():
-                return _record_halt_and_return(
-                    out,
-                    "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
-                    "calibration_sha256 mismatch against canonical calibration split",
-                )
-            measured_drop = _measure_calibration_drop_permille(
-                fp32_layers, qmodel_4bit, supplied_x_cal, supplied_y_cal
+        if supplied_x_cal is None or supplied_y_cal is None:
+            return _record_halt_and_return(
+                out,
+                "L0_FEET_CALIBRATION_REQUIRED",
+                "hot-loaded student checkpoint requires a non-empty calibration split (calibration_X, calibration_y)",
             )
-            ood_clf = _build_ood_monitor_for_layers(fp32_layers, supplied_x_cal, supplied_y_cal)
-        else:
-            if expected_cal_sha is not None:
-                return _record_halt_and_return(
-                    out,
-                    "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
-                    "expected calibration_sha256 supplied without calibration_X/calibration_y",
-                )
-            default_bundle = _get_bench_monitor_bundle()
-            if qmodel_4bit.layers[0].shape[0] == _N_FEATURES and qmodel_4bit.layers[-1].shape[1] == len(REGIME_NAMES):
-                actual_cal_sha = default_bundle["calibration_sha256"]
-                measured_drop = _measure_calibration_drop_permille(
-                    fp32_layers, qmodel_4bit, default_bundle["X_cal"], default_bundle["y_cal"]
-                )
-                ood_clf = _build_ood_monitor_for_layers(
-                    fp32_layers, default_bundle["X_cal"], default_bundle["y_cal"]
-                )
-            else:
-                actual_cal_sha = None
-                measured_drop = 0
-                ood_clf = None
+
+        actual_cal_sha = supplied_cal_sha256
+        if expected_cal_sha is not None and actual_cal_sha != str(expected_cal_sha).strip().lower():
+            return _record_halt_and_return(
+                out,
+                "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
+                "calibration_sha256 mismatch against canonical calibration split",
+            )
+
+        d_in_student = int(qmodel_4bit.layers[0].shape[0])
+        d_out_student = int(qmodel_4bit.layers[-1].shape[1])
+        if (
+            supplied_x_cal.shape[1] != d_in_student
+            or d_out_student < 1
+            or int(np.min(supplied_y_cal)) < 0
+            or int(np.max(supplied_y_cal)) >= d_out_student
+        ):
+            return _record_halt_and_return(
+                out,
+                "L0_FEET_CALIBRATION_REQUIRED",
+                f"calibration split X={supplied_x_cal.shape}, y in [{int(np.min(supplied_y_cal))}, {int(np.max(supplied_y_cal))}] "
+                f"does not match hot-loaded student shape ({d_in_student} -> {d_out_student})",
+            )
+
+        measured_drop, cal_fp32_acc_permille, cal_int4_acc_permille = _measure_calibration_metrics_permille(
+            fp32_layers, qmodel_4bit, supplied_x_cal, supplied_y_cal
+        )
+        ood_clf = _build_ood_monitor_for_layers(fp32_layers, supplied_x_cal, supplied_y_cal)
     else:
         bundle = _get_bench_monitor_bundle()
         fp32_layers = bundle["fp32_layers"]
@@ -578,7 +615,19 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
                     "L0_FEET_CHECKPOINT_SHA256_MISMATCH",
                     "calibration_sha256 mismatch on supplied calibration split",
                 )
-            measured_drop = _measure_calibration_drop_permille(
+            d_in_default = int(qmodel_4bit.layers[0].shape[0])
+            d_out_default = int(qmodel_4bit.layers[-1].shape[1])
+            if (
+                supplied_x_cal.shape[1] != d_in_default
+                or int(np.min(supplied_y_cal)) < 0
+                or int(np.max(supplied_y_cal)) >= d_out_default
+            ):
+                return _record_halt_and_return(
+                    out,
+                    "L0_FEET_CALIBRATION_REQUIRED",
+                    f"supplied calibration split does not match bench monitor ({d_in_default} -> {d_out_default})",
+                )
+            measured_drop, cal_fp32_acc_permille, cal_int4_acc_permille = _measure_calibration_metrics_permille(
                 fp32_layers, qmodel_4bit, supplied_x_cal, supplied_y_cal
             )
             ood_clf = _build_ood_monitor_for_layers(fp32_layers, supplied_x_cal, supplied_y_cal)
@@ -591,12 +640,33 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
                     "calibration_sha256 mismatch against canonical bench calibration split",
                 )
             measured_drop = int(bundle["measured_drop_permille"])
+            cal_fp32_acc_permille = int(bundle["cal_fp32_acc_permille"])
+            cal_int4_acc_permille = int(bundle["cal_int4_acc_permille"])
             ood_clf = bundle["ood_clf"]
 
     stepbot_exec = out.get("stepbot_execution") or {}
     manip = out.get("manipulation") or {}
     dispense_error_permille = int(out.get("dispense_error_permille", 12))
-    max_acc_drop_permille = int(out.get("max_acc_drop_permille", 15))
+
+    # Packet may tighten max_acc_drop_permille (<= 15) and raise min_cal_acc_permille (>= 700), never relax them!
+    raw_max_drop = int(out.get("max_acc_drop_permille", DEFAULT_MAX_ACC_DROP_PERMILLE))
+    max_acc_drop_permille = max(0, min(raw_max_drop, DEFAULT_MAX_ACC_DROP_PERMILLE))
+
+    raw_min_cal_acc = int(
+        merged_ckpt_meta.get(
+            "min_cal_acc_permille",
+            out.get("min_cal_acc_permille", DEFAULT_MIN_CAL_ACC_PERMILLE),
+        )
+    )
+    min_cal_acc_permille = min(1000, max(raw_min_cal_acc, DEFAULT_MIN_CAL_ACC_PERMILLE))
+
+    allow_unmonitored_student = bool(
+        merged_ckpt_meta.get(
+            "allow_unmonitored_student",
+            out.get("allow_unmonitored_student", False),
+        )
+    )
+
     if "quant_acc_drop_permille" in out and out["quant_acc_drop_permille"] is not None:
         quant_acc_drop_permille = max(int(out["quant_acc_drop_permille"]), int(measured_drop))
     else:
@@ -605,11 +675,21 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
     aspiration_clean = bool(out.get("aspiration_clean", True))
     incubation_window_clean = bool(out.get("incubation_window_clean", True))
     seal_intact = bool(out.get("seal_intact", True))
+    interlocks_source = "packet_passthrough"
 
+    expected_d_in = int(qmodel_4bit.layers[0].shape[0])
     if "sensor_features" in out and out["sensor_features"] is not None:
         sensor_vec = np.asarray(out["sensor_features"], dtype=np.float32).reshape(-1)
+        sensor_source = "packet"
+        if sensor_vec.size != expected_d_in or not np.all(np.isfinite(sensor_vec)):
+            return _record_halt_and_return(
+                out,
+                "L0_FEET_CALIBRATION_REQUIRED",
+                f"packet sensor_features length {sensor_vec.size} (finite={bool(np.all(np.isfinite(sensor_vec)))}) "
+                f"does not match student input dim {expected_d_in}",
+            )
     else:
-        expected_d_in = int(qmodel_4bit.layers[0].shape[0])
+        sensor_source = "derived_from_protocol_hash"
         base_vec = _derive_sensor_features(stepbot_exec, manip, dispense_error_permille)
         if expected_d_in == _N_FEATURES:
             sensor_vec = base_vec
@@ -628,12 +708,13 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
     int4_pred = int(np.argmax(int4_logits))
     fp32_int4_pred_agree = bool(fp32_pred == int4_pred)
 
+    ood_monitor_active = bool(ood_clf is not None and sensor_vec.size == ood_clf.n_features)
     safe_hold_abstained = False
     ood_l1_score = 0
     int4_sat_clips = 0
     int8_in_clips = 0
     energy_margin = 0
-    if ood_clf is not None and sensor_vec.size == ood_clf.n_features:
+    if ood_monitor_active:
         ood_pred = ood_clf.predict_drift_abstaining_int4(sensor_vec)
         safe_hold_abstained = bool(ood_pred.abstained)
         ood_l1_score = int(ood_pred.l1_mahalanobis_score)
@@ -652,6 +733,12 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
     if not nibble_roundtrip_exact or quant_acc_drop_permille > max_acc_drop_permille:
         out["halted"] = True
         out["halt_reason"] = "L0_FEET_QUANT_DRIFT_BLOCK"
+    elif cal_fp32_acc_permille < min_cal_acc_permille or cal_int4_acc_permille < min_cal_acc_permille:
+        out["halted"] = True
+        out["halt_reason"] = "L0_FEET_ACCURACY_FLOOR_BLOCK"
+    elif not ood_monitor_active and not allow_unmonitored_student:
+        out["halted"] = True
+        out["halt_reason"] = "L0_FEET_MONITOR_UNAVAILABLE"
     elif safe_hold_abstained:
         out["halted"] = True
         out["halt_reason"] = "L0_FEET_SAFE_HOLD_ABSTAIN"
@@ -667,8 +754,15 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
         "aspiration_clean": aspiration_clean,
         "incubation_window_clean": incubation_window_clean,
         "seal_intact": seal_intact,
+        "sensor_source": sensor_source,
+        "interlocks_source": interlocks_source,
         "quant_acc_drop_permille": quant_acc_drop_permille,
         "max_acc_drop_permille": max_acc_drop_permille,
+        "cal_fp32_acc_permille": cal_fp32_acc_permille,
+        "cal_int4_acc_permille": cal_int4_acc_permille,
+        "min_cal_acc_permille": min_cal_acc_permille,
+        "ood_monitor_active": ood_monitor_active,
+        "allow_unmonitored_student": allow_unmonitored_student,
         "monitor_regime": monitor_regime,
         "fp32_pred_class": fp32_pred,
         "int8_pred_class": int8_pred,
@@ -685,6 +779,11 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
     status = "BLOCK" if out["halted"] else "PASS"
+    opt_out_note = (
+        f", allow_unmonitored_student={allow_unmonitored_student}"
+        if allow_unmonitored_student
+        else ""
+    )
     out["trace"].append(
         {
             "repo": REPO_ID,
@@ -693,9 +792,12 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
             "summary": (
                 f"L0 int8/4-bit runtime {status}: packed_bytes={packed_len}, "
                 f"nibble_roundtrip_exact={nibble_roundtrip_exact}, "
+                f"cal_int4_acc_permille={cal_int4_acc_permille}>={min_cal_acc_permille}, "
                 f"quant_acc_drop_permille={quant_acc_drop_permille}/{max_acc_drop_permille}, "
+                f"ood_monitor_active={ood_monitor_active}{opt_out_note}, "
                 f"fp32_int4_agree={fp32_int4_pred_agree}, safe_hold={safe_hold_abstained}, "
-                f"dispense_error_permille={dispense_error_permille}, regime={monitor_regime}"
+                f"sensor_source={sensor_source}, dispense_error_permille={dispense_error_permille}, "
+                f"regime={monitor_regime}"
             ),
         }
     )
@@ -706,9 +808,10 @@ def process_packet(packet: dict[str, Any]) -> dict[str, Any]:
             "invariant": "nibble_pack_roundtrip_and_drift_cap",
             "first_principles": (
                 "Signed two's-complement 4-bit nibbles in [-8, 7] pack two weights per uint8 byte "
-                "with exact bit-masked round-trip, verified SHA-256 checkpoints and calibration "
-                "splits bound empirical accuracy_drop_permille <= max_drop_permille, and the "
-                "<512 B int4 OOD/saturation monitor gates telemetry emitted to lab-attrib."
+                "with exact bit-masked round-trip, verified SHA-256 checkpoints and non-empty calibration "
+                "splits enforce calibration accuracy floors and empirical accuracy_drop_permille <= 15, "
+                "and the calibrated 220 B (24-feature, 6-class) int4 OOD/saturation monitor gates telemetry "
+                "emitted to lab-attrib."
             ),
         }
     )

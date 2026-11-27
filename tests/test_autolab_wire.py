@@ -280,5 +280,134 @@ def test_issue_30_splitguard_sha256_verification_hotload_and_safe_hold(tmp_path:
     res_15 = process_packet({"stepbot_execution": {"protocol_sha256": f"{15:064x}"}})
     assert res_15["halted"] is False
     assert res_15["edge_runtime"]["fp32_int4_pred_agree"] is True
+    assert res_15["edge_runtime"]["sensor_source"] == "derived_from_protocol_hash"
+    assert res_15["edge_runtime"]["interlocks_source"] == "packet_passthrough"
+    assert res_15["edge_runtime"]["ood_monitor_active"] is True
+
+
+def test_issue_35_fail_closed_hotload_calibration_accuracy_floor_monitor_and_cap_clamp() -> None:
+    """Issue #35: Fail-closed wire checks across off-shape/missing/empty cal, degenerate, 3-layer, and cap raise."""
+    import numpy as np
+    from lab_feet import distill_kl_student, forward, quantize_model, to_binary_buffer
+
+    rng = np.random.default_rng(3535)
+
+    # 1) 10 -> 8 -> 3 hot-loaded LFT1 student with matching SHA-256 and NO calibration split -> L0_FEET_CALIBRATION_REQUIRED
+    layers_10_8_3 = [
+        (rng.normal(0.0, 0.4, size=(10, 8)).astype(np.float32), np.zeros(8, dtype=np.float32)),
+        (rng.normal(0.0, 0.4, size=(8, 3)).astype(np.float32), np.zeros(3, dtype=np.float32)),
+    ]
+    qm_offshape = quantize_model(layers_10_8_3, bits=4, per_channel=True, mode="symmetric_full")
+    offshape_bytes = to_binary_buffer(qm_offshape)
+    offshape_sha = autolab_wire.compute_checkpoint_sha256(offshape_bytes)
+    res_no_cal = process_packet(
+        {
+            "posttrain": {"split_guard_clean": True, "checkpoint_sha256": offshape_sha},
+            "distilled_student": {"lft1_bytes": offshape_bytes},
+        }
+    )
+    assert res_no_cal["halted"] is True
+    assert res_no_cal["halt_reason"] == "L0_FEET_CALIBRATION_REQUIRED"
+
+    # 2) Empty calibration split -> halted=True with L0_FEET_CALIBRATION_REQUIRED
+    res_empty_cal = process_packet(
+        {
+            "posttrain": {"split_guard_clean": True, "checkpoint_sha256": offshape_sha},
+            "distilled_student": {
+                "lft1_bytes": offshape_bytes,
+                "calibration_X": np.empty((0, 10), dtype=np.float32),
+                "calibration_y": np.empty((0,), dtype=np.int64),
+            },
+        }
+    )
+    assert res_empty_cal["halted"] is True
+    assert res_empty_cal["halt_reason"] == "L0_FEET_CALIBRATION_REQUIRED"
+
+    # 3) Constant-output 24 -> 16 -> 6 student with valid calibration split -> L0_FEET_ACCURACY_FLOOR_BLOCK
+    x_cal_24 = rng.uniform(-0.8, 1.2, size=(96, 24)).astype(np.float32)
+    y_cal_24 = (np.arange(96, dtype=np.int64) % 6)
+    const_layers = [
+        (np.zeros((24, 16), dtype=np.float32), np.zeros(16, dtype=np.float32)),
+        (np.zeros((16, 6), dtype=np.float32), np.array([2.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)),
+    ]
+    qm_const = quantize_model(const_layers, bits=4, per_channel=True, mode="symmetric_full")
+    const_bytes = to_binary_buffer(qm_const)
+    const_sha = autolab_wire.compute_checkpoint_sha256(const_bytes)
+    const_cal_sha = autolab_wire.compute_calibration_sha256(x_cal_24, y_cal_24)
+    res_const = process_packet(
+        {
+            "posttrain": {
+                "split_guard_clean": True,
+                "checkpoint_sha256": const_sha,
+                "calibration_sha256": const_cal_sha,
+            },
+            "distilled_student": {
+                "lft1_bytes": const_bytes,
+                "calibration_X": x_cal_24,
+                "calibration_y": y_cal_24,
+            },
+        }
+    )
+    assert res_const["halted"] is True
+    assert res_const["halt_reason"] == "L0_FEET_ACCURACY_FLOOR_BLOCK"
+    assert res_const["edge_runtime"]["cal_int4_acc_permille"] < res_const["edge_runtime"]["min_cal_acc_permille"]
+
+    # 4) 3-layer student (24 -> 16 -> 16 -> 6) with valid calibration split and no opt-out -> L0_FEET_MONITOR_UNAVAILABLE
+    protos_3 = np.zeros((6, 24), dtype=np.float32)
+    for c in range(6):
+        protos_3[c, 4 * c : 4 * c + 4] = 3.0
+    y_tr_3 = np.repeat(np.arange(6, dtype=np.int64), 40)
+    x_tr_3 = protos_3[y_tr_3] + rng.normal(0.0, 0.15, size=(240, 24)).astype(np.float32)
+    y_cal_3_aligned = np.repeat(np.arange(6, dtype=np.int64), 16)
+    x_cal_3 = protos_3[y_cal_3_aligned] + rng.normal(0.0, 0.15, size=(96, 24)).astype(np.float32)
+    t_tr_3 = x_tr_3 @ protos_3.T
+    layers_3, _ = distill_kl_student(
+        x_tr_3, y_tr_3, t_tr_3, X_val=x_cal_3, y_val=y_cal_3_aligned, hidden_sizes=(16, 16), epochs=180, seed=3535
+    )
+    qm_3 = quantize_model(
+        layers_3, bits=4, per_channel=True, mode="symmetric_full", clip_search="activation_mse", X_cal=x_cal_3
+    )
+    lft1_3_bytes = to_binary_buffer(qm_3)
+    ckpt_3_sha = autolab_wire.compute_checkpoint_sha256(lft1_3_bytes)
+    cal_3_sha = autolab_wire.compute_calibration_sha256(x_cal_3, y_cal_3_aligned)
+
+    pkt_3layer = {
+        "posttrain": {
+            "split_guard_clean": True,
+            "checkpoint_sha256": ckpt_3_sha,
+            "calibration_sha256": cal_3_sha,
+        },
+        "distilled_student": {
+            "lft1_bytes": lft1_3_bytes,
+            "calibration_X": x_cal_3,
+            "calibration_y": y_cal_3_aligned,
+        },
+        "sensor_features": x_cal_3[0].tolist(),
+    }
+    res_3layer = process_packet(pkt_3layer)
+    assert res_3layer["halted"] is True
+    assert res_3layer["halt_reason"] == "L0_FEET_MONITOR_UNAVAILABLE"
+    assert res_3layer["edge_runtime"]["ood_monitor_active"] is False
+    assert res_3layer["edge_runtime"]["sensor_source"] == "packet"
+    assert res_3layer["edge_runtime"]["interlocks_source"] == "packet_passthrough"
+
+    # Explicit opt-out (`allow_unmonitored_student=True`) passes and logs opt-out in trace
+    res_3layer_optout = process_packet({**pkt_3layer, "allow_unmonitored_student": True})
+    assert res_3layer_optout["halted"] is False
+    assert res_3layer_optout["edge_runtime"]["ood_monitor_active"] is False
+    assert res_3layer_optout["edge_runtime"]["allow_unmonitored_student"] is True
+    assert "allow_unmonitored_student=True" in res_3layer_optout["trace"][-1]["summary"]
+
+    # 5) Packet attempting to raise max_acc_drop_permille=1000 with quant_acc_drop_permille=20 is clamped to 15 and blocked
+    res_clamp = process_packet({"quant_acc_drop_permille": 20, "max_acc_drop_permille": 1000})
+    assert res_clamp["halted"] is True
+    assert res_clamp["halt_reason"] == "L0_FEET_QUANT_DRIFT_BLOCK"
+    assert res_clamp["edge_runtime"]["max_acc_drop_permille"] == 15
+
+    # Tightening max_acc_drop_permille below 15 IS honored
+    res_tight = process_packet({"quant_acc_drop_permille": 10, "max_acc_drop_permille": 5})
+    assert res_tight["halted"] is True
+    assert res_tight["halt_reason"] == "L0_FEET_QUANT_DRIFT_BLOCK"
+    assert res_tight["edge_runtime"]["max_acc_drop_permille"] == 5
 
 

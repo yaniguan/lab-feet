@@ -360,12 +360,23 @@ def test_issue_24_so3_equivariant_irrep_quantization() -> None:
 
 
 def test_issues_21_22_and_cli_schema_end_to_end(tmp_path: Path) -> None:
-    """Issues #16, #21, #22: End-to-end digits, wet-lab domain, autoencoder compression, and JSON schema."""
+    """Issues #16, #21, #22, #37: End-to-end digits, synthetic wet-lab, synthetic autoencoder, and JSON schema."""
     wetlab = run_wetlab_acoustic_benchmark(seed=0, n_warmup=5, n_timing=20)
+    assert wetlab["is_synthetic"] is True
     by_w = {r["name"]: r for r in wetlab["models"]}
-    assert by_w["wetlab student (16,) KL+CE fp32"]["test_acc"] >= by_w["wetlab student (16,) hard fp32"]["test_acc"]
+    assert "synthetic wetlab same-trainer CE (16,) fp32" in by_w
+    assert "synthetic wetlab sklearn MLPClassifier hard-label" in by_w
+    assert "synthetic wetlab student (16,) KL+CE fp32" in by_w
+    for student_name in (
+        "synthetic wetlab sklearn MLPClassifier hard-label",
+        "synthetic wetlab same-trainer CE (16,) fp32",
+        "synthetic wetlab student (16,) KL+CE fp32",
+        "synthetic wetlab 4-bit W4A8 (int32)",
+    ):
+        assert by_w[student_name]["test_acc"] > (1.0 / 6.0) + 0.15
 
     ae = run_autoencoder_compression_benchmark(seed=0)
+    assert ae["is_synthetic"] is True
     assert ae["compression_ratio_4bit"] > 7.0
     assert ae["int4_anomaly_auroc"] >= 0.98
 
@@ -673,6 +684,10 @@ def test_issue_31_c99_header_and_onnx_exporters_bit_exact_parity(tmp_path: Path)
     assert onnx_file.is_file() and onnx_file.stat().st_size > 64
     assert json_graph_file.is_file()
 
+    if os.environ.get("LAB_FEET_REQUIRE_ORT") == "1":
+        assert importlib.util.find_spec("onnxruntime") is not None, "LAB_FEET_REQUIRE_ORT=1 requires onnxruntime"
+        assert importlib.util.find_spec("onnx") is not None, "LAB_FEET_REQUIRE_ORT=1 requires onnx"
+
     if importlib.util.find_spec("onnxruntime") is not None:
         import onnxruntime as ort
 
@@ -692,6 +707,153 @@ def test_issue_31_c99_header_and_onnx_exporters_bit_exact_parity(tmp_path: Path)
         assert np.allclose(ort_qlin, py_qlin, atol=1e-5)
 
 
+def test_issue_34_onnx_qlinear_digits_accuracy_c99_parity_and_prebias_hidden_range() -> None:
+    """Issue #34: qlinear keeps final layer in int32 (MatMulInteger) and calibrates pre-bias hidden QLinearMatMul."""
+    import importlib.util
+    from sklearn.datasets import load_digits
+
+    X, y = load_digits(return_X_y=True)
+    X_tr, y_tr, X_val, y_val, X_te, y_te = make_stratified_splits(X, y, seed=0)
+
+    teacher_clf = MLPClassifier(hidden_layer_sizes=(256, 256), max_iter=350, random_state=0)
+    fit_sklearn_mlp(teacher_clf, X_tr, y_tr)
+    t_logits_tr = forward(get_layers(teacher_clf), X_tr)
+
+    kl_layers, _ = distill_kl_student(
+        X_tr,
+        y_tr,
+        t_logits_tr,
+        X_val=X_val,
+        y_val=y_val,
+        hidden_sizes=(32,),
+        temperature=4.0,
+        alpha=0.25,
+        epochs=240,
+        seed=0,
+    )
+    q_int8_pt = quantize_model(kl_layers, 8, per_channel=False, mode="symmetric")
+    q_int4_mse = quantize_model(
+        kl_layers,
+        4,
+        per_channel=True,
+        mode="symmetric",
+        clip_search="activation_mse",
+        X_cal=X_val,
+    )
+
+    has_ort = importlib.util.find_spec("onnxruntime") is not None
+    has_onnx = importlib.util.find_spec("onnx") is not None
+    if os.environ.get("LAB_FEET_REQUIRE_ORT") == "1":
+        assert has_ort and has_onnx
+
+    for tag, qm in [("int8_pt", q_int8_pt), ("int4_pc_mse", q_int4_mse)]:
+        deq_logits = qm.forward_dequant(X_te)
+        deq_acc = float((deq_logits.argmax(axis=1) == y_te).mean())
+
+        # qdq export remains bit-exact to dequantized float32
+        g_qdq = export_quantized_graph(qm, opset=21, operator_mode="qdq")
+        assert np.allclose(evaluate_quantized_graph(g_qdq, X_te), deq_logits, atol=1e-5)
+
+        _, c99_logits_f32 = simulate_c99_fixed_point(qm, X_te, X_cal=X_val)
+        c99_preds = c99_logits_f32.argmax(axis=1)
+
+        g_qlin = export_quantized_graph(qm, opset=21, operator_mode="qlinear", X_cal=X_val)
+        op_types = [n["op_type"] for n in g_qlin["nodes"]]
+        assert "QLinearMatMul" in op_types
+        assert "MatMulInteger" in op_types
+
+        py_qlin_logits = evaluate_quantized_graph(g_qlin, X_te)
+        py_qlin_preds = py_qlin_logits.argmax(axis=1)
+        py_qlin_acc = float((py_qlin_preds == y_te).mean())
+        py_c99_agree = float((py_qlin_preds == c99_preds).mean())
+
+        assert py_qlin_acc >= deq_acc - 0.01, f"{tag} py qlinear acc {py_qlin_acc:.4f} < {deq_acc - 0.01:.4f}"
+        assert py_c99_agree >= 0.99, f"{tag} py qlinear vs C99 agreement {py_c99_agree:.4f} < 0.99"
+
+        proto_bytes = export_quantized_onnx(qm, opset=21, operator_mode="qlinear", X_cal=X_val)
+        if has_onnx:
+            import onnx
+
+            onnx.checker.check_model(onnx.load_from_string(proto_bytes))
+        if has_ort:
+            import onnxruntime as ort
+
+            sess = ort.InferenceSession(proto_bytes, providers=["CPUExecutionProvider"])
+            ort_logits = sess.run(None, {"input": X_te})[0]
+            ort_preds = ort_logits.argmax(axis=1)
+            ort_acc = float((ort_preds == y_te).mean())
+            ort_c99_agree = float((ort_preds == c99_preds).mean())
+            assert np.allclose(ort_logits, py_qlin_logits, atol=1e-5)
+            assert ort_acc >= deq_acc - 0.01, f"{tag} ORT qlinear acc {ort_acc:.4f} < {deq_acc - 0.01:.4f}"
+            assert ort_c99_agree >= 0.99, f"{tag} ORT qlinear vs C99 agreement {ort_c99_agree:.4f} < 0.99"
+
+    # Hidden layer with large negative pre-bias matmul + positive bias (post-ReLU is small, pre-bias is large negative)
+    rng = np.random.default_rng(34)
+    X_neg = rng.uniform(0.5, 2.0, size=(64, 8)).astype(np.float32)
+    W0_neg = np.full((8, 6), -3.0, dtype=np.float32)
+    W0_neg[:, 0] = -2.5
+    b0_pos = np.full(6, 28.0, dtype=np.float32)  # X @ W0 in [-38, -10], + b0 -> [-10, +18]
+    W1 = rng.normal(0.0, 0.8, size=(6, 4)).astype(np.float32)
+    b1 = np.zeros(4, dtype=np.float32)
+    qm_neg = quantize_model([(W0_neg, b0_pos), (W1, b1)], 8, per_channel=True, mode="symmetric")
+    g_neg = export_quantized_graph(qm_neg, opset=21, operator_mode="qlinear", X_cal=X_neg)
+    qlin_neg = evaluate_quantized_graph(g_neg, X_neg)
+    deq_neg = qm_neg.forward_dequant(X_neg)
+    assert float((qlin_neg.argmax(axis=1) == deq_neg.argmax(axis=1)).mean()) >= 0.96
+
+
+def test_issue_37_same_trainer_ce_control_computed_converged_timing_labels_and_multiseed_cli(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #37: Same-trainer CE control, non-constant converged, honest timing labels, and --seeds CLI."""
+    rng = np.random.default_rng(37)
+    X_tiny = rng.normal(size=(48, 12)).astype(np.float32)
+    y_tiny = rng.integers(0, 4, size=48, dtype=np.int64)
+    t_logits = rng.normal(size=(48, 4)).astype(np.float32)
+    _, diag_short = distill_kl_student(X_tiny, y_tiny, t_logits, hidden_sizes=(8,), epochs=2, seed=0)
+    assert diag_short.converged is False
+
+    digits = run_digits_benchmark(seed=0, n_warmup=5, n_timing=20)
+    by_name = {r["name"]: r for r in digits["models"]}
+    assert "sklearn MLPClassifier hard-label" in by_name
+    assert "student same-trainer CE fp32" in by_name
+    assert "student hybrid KL(T^2)+CE fp32" in by_name
+    assert by_name["student hybrid KL(T^2)+CE fp32"]["training"]["converged"] is True
+
+    # Every dequantized quantized model row explicitly says "(dequantized fp32 timing)"
+    for row in digits["models"]:
+        t_mode = row["timing_mode"]
+        if t_mode == "dequantized_fp32":
+            assert "(dequantized fp32 timing)" in row["name"]
+        elif t_mode in ("integer_w8a8", "integer_w4a8", "integer_c99_sim"):
+            assert "(int32)" in row["name"]
+
+    ms_json = tmp_path / "multiseed_report.json"
+    rc = demo_mod.main(
+        [
+            "--digits-only",
+            "--seeds",
+            "2",
+            "--n-warmup",
+            "5",
+            "--n-timing",
+            "20",
+            "--json-out",
+            str(ms_json),
+        ]
+    )
+    assert rc == 0
+    stdout_text = capsys.readouterr().out
+    assert "KL+CE vs same-trainer CE (win / tie / loss over 2 seeds):" in stdout_text
+
+    schema = json.loads((REPO_ROOT / "schema" / "benchmark_report.schema.json").read_text(encoding="utf-8"))
+    ms_data = json.loads(ms_json.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(ms_data)
+    cmp = ms_data["multiseed_digits"]["kl_vs_same_trainer_ce"]
+    assert cmp["wins"] + cmp["ties"] + cmp["losses"] == 2
+
+
 def test_issues_16_17_19_ci_requirements_readme_and_english_only() -> None:
     """Issues #16, #17, #19: Verify requirements pins, multi-OS CI matrix, README grammar, and English-only."""
     req = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -705,6 +867,22 @@ def test_issues_16_17_19_ci_requirements_readme_and_english_only() -> None:
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "runtimes, The" not in readme
+    assert "< 512 B" not in readme and "<512 B" not in readme
+
+    real_json_path = REPO_ROOT / "benchmarks" / "results" / "real_datasets_2026.json"
+    assert real_json_path.is_file()
+    rb = json.loads(real_json_path.read_text(encoding="utf-8"))
+    d10 = rb["sklearn_digits_10seed"]
+    cmp = d10["kl_vs_same_trainer_ce"]
+    assert f"{cmp['wins']} / {cmp['ties']} / {cmp['losses']}" in readme
+    for row in d10["models"]:
+        assert f"{row['mean_test_acc']:.4f} +- {row['std_test_acc']:.4f}" in readme
+    gas_b5 = {
+        r["batch_id"]: r
+        for r in rb["uci_gas_sensor_drift_abstention"]["full_128d_948B"]["drift_batches"]
+    }[5]
+    assert f"{gas_b5['guarded_accepted_accuracy_pct']:.2f}" in readme
+    assert f"{gas_b5['ttn_crc_frontier']['accepted_accuracy_pct']:.2f}" in readme
 
     out = subprocess.check_output(
         ["git", "-C", str(REPO_ROOT), "ls-files", "-c", "-o", "--exclude-standard"],

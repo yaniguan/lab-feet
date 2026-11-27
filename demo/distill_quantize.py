@@ -61,6 +61,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Run teacher-student distillation (KL T^2 + CE vs MSE) and int8/4-bit quantization."
     )
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        default=None,
+        help="Run N split-and-init seeds (e.g. --seeds 10) comparing KL+CE vs same-trainer CE.",
+    )
     parser.add_argument("--n-warmup", type=int, default=N_WARMUP)
     parser.add_argument("--n-timing", type=int, default=N_TIMING)
     parser.add_argument("--digits-only", action="store_true", help="Run only the 8x8 digits benchmark.")
@@ -85,6 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--n-timing",
         str(args.n_timing),
     ]
+    if args.seeds is not None:
+        cli_argv.extend(["--seeds", str(args.seeds)])
     if args.digits_only:
         cli_argv.append("--digits-only")
     if args.json_out:
